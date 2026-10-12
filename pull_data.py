@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Pull the bot's CSV logs from the server into this folder.
+
+Usage:
+    python pull_data.py                         # all predict-bot logs, prompts for the SSH password
+    python pull_data.py btc-5-predict-dual-trades.csv
+    PM_SSH_PASSWORD=... python pull_data.py     # non-interactive
+
+The password is only held in memory / the child process environment; it is never
+written to disk or passed on the command line.
+"""
+import argparse
+import getpass
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+DEFAULT_HOST = "root@187.7.17.28"
+DEFAULT_REMOTE_DIR = "~/predict-bot"
+DEFAULT_FILES = [
+    "*-predict-dual-trades.csv",
+    "*-updown.csv",
+    # logs archived after a column change; without these a pull after a restart replaces the history
+    "*-predict-dual-trades.csv.2*.bak",
+]
+PASSWORD_ENV = "PM_SSH_PASSWORD"
+
+
+def make_askpass(tmp: Path) -> Path:
+    script = tmp / "askpass.sh"
+    script.write_text(f'#!/bin/sh\nprintf "%s\\n" "${PASSWORD_ENV}"\n')
+    script.chmod(stat.S_IRWXU)
+    return script
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Pull CSV logs from the bot server.")
+    parser.add_argument("files", nargs="*", default=DEFAULT_FILES, help="remote file names (globs allowed)")
+    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
+    parser.add_argument("--dest", default=str(Path(__file__).resolve().parent))
+    args = parser.parse_args()
+
+    password = os.environ.get(PASSWORD_ENV) or getpass.getpass(f"SSH password for {args.host}: ")
+    dest = Path(args.dest)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        env = {
+            **os.environ,
+            PASSWORD_ENV: password,
+            "SSH_ASKPASS": str(make_askpass(tmp)),
+            "SSH_ASKPASS_REQUIRE": "force",
+            "DISPLAY": os.environ.get("DISPLAY", ":0"),
+        }
+        sources = [f"{args.host}:{args.remote_dir.rstrip('/')}/{name}" for name in args.files]
+        cmd = [
+            "scp", "-q",
+            "-o", "PreferredAuthentications=password,keyboard-interactive",
+            "-o", "NumberOfPasswordPrompts=1",
+            "-o", "StrictHostKeyChecking=accept-new",
+            *sources, str(tmp),
+        ]
+        result = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL)
+
+        pulled = []
+        for src in sorted(tmp.iterdir()):
+            if src.name != "askpass.sh":
+                shutil.move(str(src), dest / src.name)
+                pulled.append(src.name)
+        missing = [n for n in args.files if not any(Path(p).match(n) for p in pulled)]
+
+    for name in pulled:
+        size = (dest / name).stat().st_size
+        print(f"✅ {name} ({size:,} bytes)")
+    for name in missing:
+        print(f"❌ {name} not pulled")
+    if result.returncode != 0 and not pulled:
+        print("scp failed (wrong password or host unreachable?)", file=sys.stderr)
+    return 0 if pulled else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
