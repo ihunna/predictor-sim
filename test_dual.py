@@ -20,9 +20,9 @@ def run_window(sim, ticks, start=START, end=END):
     return sim.finish_window()
 
 
-def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0):
+def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=True):
     return DualSim("btc", 5, 30, 8, place_at, os.path.join(tmp, "trades.csv"), capital, "default",
-                   hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds)
+                   hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds, stop_loss_live=stop_loss_live)
 
 
 def test_both_fill_and_lowest_times(tmp):
@@ -217,6 +217,20 @@ def test_stop_loss(tmp):
     assert state.stop_side is None
 
 
+def test_stop_loss_logged_only(tmp):
+    sim = new_sim(tmp, stop_loss_seconds=20, stop_loss_live=False)
+    ticks = [(0, 0.50, 0.51), (60, 0.30, 0.71), (280, 0.16, 0.85), (290, 0.05, 0.96)]
+    state = run_window(sim, ticks)
+    assert state.stop_side is None and state.held("Up") == 8
+    assert state.would_stop == ("Up", 8, 0.15, 20)
+    row = sim.settle(state, "Down", 1, 2, None, taker_fee_bps=200)
+    assert row["pnl"] == "-2.4000" and row["would_stop_side"] == "Up" and row["would_stop_price_cents"] == 15
+    assert row["would_stop_saved"] == "+1.1760", row["would_stop_saved"]
+    assert "would_stop_sell_up_8@15_at_00:20_left" in row["notes"]
+    state = run_window(sim, ticks)
+    assert sim.would_stop_saved(state, "Up") == round(1.20 - 8, 4)
+
+
 def test_tie(tmp):
     sim = new_sim(tmp)
     state = run_window(sim, [(0, 0.29, 0.29)])
@@ -288,6 +302,7 @@ def main():
             test_cancel_when_nothing_fills,
             test_hedge_split,
             test_stop_loss,
+            test_stop_loss_logged_only,
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,

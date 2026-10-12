@@ -235,7 +235,10 @@ def parse_args():
                              "even if it wins, the rest at --limit (default 50; 0 = off).")
     parser.add_argument("--stop-loss-at", type=int, default=20, metavar="SECONDS_LEFT",
                         help="With this many seconds left, if the window would lose with the side now leading as "
-                             "the winner, sell the losing side's unmatched contracts at its bid (default 20; 0 = off).")
+                             "the winner, sell the losing side's unmatched contracts at its bid (default 20; 0 = off). "
+                             "Only logged (would_stop_* columns) unless --stop-loss-live is given.")
+    parser.add_argument("--stop-loss-live", action="store_true",
+                        help="Actually sell when the stop-loss fires, instead of only logging it.")
     parser.add_argument("--cancel-left-pct", type=float, default=40.0,
                         help="Cancel both orders when nothing has filled and this much of the window is left, "
                              "in percent (default 40: 2:00 left of 5m, 6:00 of 15m, 24:00 of 60m; 0 = never).")
@@ -283,7 +286,7 @@ def main():
 
     sim = DualSim(coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source,
                   max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct, hedge_cents=args.hedge_at,
-                  stop_loss_seconds=args.stop_loss_at)
+                  stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live)
     print(f"⚙️  Predict.fun dual | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
     print(sim.summarize())
     print(f"📁 updown={updown_file} | trades={trades_file}")

@@ -48,6 +48,11 @@ TRADES_HEADER = [
     "stop_contracts",
     "stop_price_cents",
     "stop_time_left",
+    "would_stop_side",
+    "would_stop_contracts",
+    "would_stop_price_cents",
+    "would_stop_time_left",
+    "would_stop_saved",
     "volume_usd",
     "up_ask_size_start",
     "up_ask_depth_5c_start",
@@ -159,6 +164,7 @@ class WindowState:
     stop_contracts: int = 0
     stop_price: float = 0.0
     stop_time_left: float | None = None
+    would_stop: tuple | None = None  # (side, contracts, bid, time_left) when the stop-loss is only logged
     depth_start: dict | None = None
     depth_first_fill: dict | None = None
     volume_usd: float | None = None
@@ -238,9 +244,10 @@ class WindowState:
 
 class DualSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
-                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=50, stop_loss_seconds=20):
+                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=50, stop_loss_seconds=20, stop_loss_live=False):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
+        self.stop_loss_live = stop_loss_live
         self.cancel_left_pct = cancel_left_pct
         self.hedge_cents = hedge_cents
         self.hedge = hedge_cents / 100.0
@@ -270,10 +277,12 @@ class DualSim:
             f"after one side fills, lock in at {self.hedge_cents}¢ on the other"
             if self.hedge_cents > 0 else "no hedge"
         )
-        stop = (
-            f"stop-loss at {format_time(self.stop_loss_seconds)} left"
-            if self.stop_loss_seconds > 0 else "no stop-loss"
-        )
+        if self.stop_loss_seconds <= 0:
+            stop = "no stop-loss"
+        elif self.stop_loss_live:
+            stop = f"stop-loss at {format_time(self.stop_loss_seconds)} left"
+        else:
+            stop = f"stop-loss paused (logging what it would sell at {format_time(self.stop_loss_seconds)} left)"
         return (
             f"🎯 Dual: {self.limit_cents}¢ limit on Up and Down, {self.contracts} contracts each, placed {when}, "
             f"{hedge}, {cancel}, {stop}, {skip} | capital ${self.capital:.2f} ({self.capital_source})"
@@ -377,6 +386,11 @@ class DualSim:
         bid = round(1.0 - asks[leader], 4)
         if projected >= 0 or excess <= 0 or bid <= 0:
             return
+        if not self.stop_loss_live:
+            state.would_stop = (loser, excess, bid, remaining)
+            state.notes.append(f"would_stop_sell_{loser.lower()}_{excess}@{round(bid * 100)}_at_"
+                               f"{format_time(remaining)}_left")
+            return
         state.stop_side, state.stop_contracts, state.stop_price = loser, excess, bid
         state.stop_time_left = remaining
         state.notes.append(f"stop_sold_{loser.lower()}_{excess}@{round(bid * 100)}_at_{format_time(remaining)}_left")
@@ -425,6 +439,17 @@ class DualSim:
             state.notes.append("not_traded")
         state.decision_pending = False
 
+    @staticmethod
+    def would_stop_saved(state, outcome, taker_fee_bps=0):
+        """What the logged-only stop-loss would have changed the pnl by: sale proceeds minus fee, minus what those
+        contracts paid at settlement. None when it would not have fired or the outcome is unknown."""
+        if not state.would_stop or outcome not in ("Up", "Down", "Tie"):
+            return None
+        side, n, bid, _ = state.would_stop
+        proceeds = bid * n * (1 - taker_fee_bps / 10000.0)
+        paid = n if outcome == side else 0.5 * n if outcome == "Tie" else 0.0
+        return round(proceeds - paid, 4)
+
     def finish_window(self):
         state, self.current = self.current, None
         return state
@@ -457,6 +482,7 @@ class DualSim:
         """Writes the trade row and moves the balance. Returns the row dict."""
         fee, pnl = self.compute_result(state, outcome, maker_fee_bps, taker_fee_bps)
         hedge = state.hedge_order
+        saved = self.would_stop_saved(state, outcome, taker_fee_bps)
         all_notes = list(state.notes) + list(notes)
         if state.up_taker:
             all_notes.append("up_taker")
@@ -504,6 +530,11 @@ class DualSim:
                 "stop_contracts": state.stop_contracts if state.stop_side else "",
                 "stop_price_cents": _cents(state.stop_price) if state.stop_side else "",
                 "stop_time_left": _secs(state.stop_time_left),
+                "would_stop_side": state.would_stop[0] if state.would_stop else "",
+                "would_stop_contracts": state.would_stop[1] if state.would_stop else "",
+                "would_stop_price_cents": _cents(state.would_stop[2]) if state.would_stop else "",
+                "would_stop_time_left": _secs(state.would_stop[3]) if state.would_stop else "",
+                "would_stop_saved": f"{saved:+.4f}" if saved is not None else "",
                 "volume_usd": f"{state.volume_usd:.2f}" if state.volume_usd is not None else "",
                 "up_ask_size_start": _shares(state.depth_start, "up_ask_size"),
                 "up_ask_depth_5c_start": _shares(state.depth_start, "up_ask_depth"),

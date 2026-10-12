@@ -428,6 +428,11 @@ class Dashboard:
                     order_lines.append(Text(
                         f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ (stop-loss) at "
                         f"{clock(state.stop_time_left)}", style="bold red"))
+                if state.would_stop and state.would_stop[0] == label:
+                    side_, n_, bid_, left_ = state.would_stop
+                    order_lines.append(Text(
+                        f"stop-loss would sell {n_} @ {round(bid_ * 100)}¢ at {clock(left_)} (paused, logged)",
+                        style="dim"))
                 filled_left = state.first_fill_time_left(label)
                 cheapest = Text()
                 cheapest.append("cheapest ", style="dim")
