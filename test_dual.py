@@ -6,7 +6,7 @@ import tempfile
 
 from dual import TRADES_HEADER, DualSim, last_capital_after
 from logs import MARKET_CSV_HEADER, format_lowest_cents, log_to_csv
-from predict_feed import best_asks, get_current_active_slug, window_bounds
+from predict_feed import best_asks, book_depth, get_current_active_slug, window_bounds
 
 START = 1791813600  # 14:00 UTC = 10am ET
 END = START + 300
@@ -20,9 +20,9 @@ def run_window(sim, ticks, start=START, end=END):
     return sim.finish_window()
 
 
-def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0):
+def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0):
     return DualSim("btc", 5, 30, 8, place_at, os.path.join(tmp, "trades.csv"), capital, "default",
-                   hedge_cents=hedge_cents)
+                   hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds)
 
 
 def test_both_fill_and_lowest_times(tmp):
@@ -185,6 +185,38 @@ def test_hedge_split(tmp):
     assert state.hedge_order is None and state.contracts("Up") == state.contracts("Down") == 8
 
 
+def test_stop_loss(tmp):
+    sim = new_sim(tmp, stop_loss_seconds=30)
+    # only Up filled, Down leads at 30s left: sell 8 Up at its bid (1 - Down ask 0.85 = 15¢)
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (269, 0.20, 0.81), (270, 0.16, 0.85),
+                             (290, 0.05, 0.96)])
+    assert state.stop_side == "Up" and state.stop_contracts == 8 and state.stop_price == 0.15
+    assert state.stop_time_left == 30 and state.held("Up") == 0
+    assert sim.compute_result(state, "Down")[1] == round(1.20 - 2.40, 4)
+    fee, pnl = sim.compute_result(state, "Down", taker_fee_bps=200)
+    assert fee == 0.024 and pnl == round(1.20 - 2.40 - 0.024, 4)
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert row["stop_side"] == "Up" and row["stop_contracts"] == 8 and row["stop_price_cents"] == 15
+
+    # Up filled and Up leads at 30s left: not losing, nothing sold
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (270, 0.85, 0.16)])
+    assert state.stop_side is None and state.stop_checked
+
+    # both filled: locked profit, nothing sold
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (100, 0.75, 0.28), (270, 0.10, 0.91)])
+    assert state.stop_side is None
+
+    # hedged 8 Up / 5 Down, Up leading at 30s left: if Up wins +3.10, not losing
+    sim.hedge_cents, sim.hedge = 50, 0.50
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (120, 0.62, 0.40), (270, 0.80, 0.35)])
+    assert state.held("Down") == 5 and state.stop_side is None
+
+    # only checked once: losing only after 30s left is not sold
+    sim.hedge_cents, sim.hedge = 0, 0.0
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (270, 0.80, 0.21), (290, 0.05, 0.96)])
+    assert state.stop_side is None
+
+
 def test_tie(tmp):
     sim = new_sim(tmp)
     state = run_window(sim, [(0, 0.29, 0.29)])
@@ -233,6 +265,9 @@ def test_old_log_upgraded_in_place(tmp):
 def test_book_and_slugs():
     assert best_asks({"asks": [[0.31, 10]], "bids": [[0.27, 5]]}) == (0.31, 0.73)
     assert best_asks({"asks": [], "bids": []}) == (0.0, 0.0)
+    depth = book_depth({"asks": [[0.30, 340], [0.31, 30], [0.36, 50]], "bids": [[0.29, 95], [0.24, 85], [0.20, 9]]})
+    assert depth == {"up_ask_size": 340, "up_ask_depth": 370, "down_ask_size": 95, "down_ask_depth": 180}, depth
+    assert book_depth({"asks": [], "bids": []})["up_ask_depth"] == 0.0
     assert get_current_active_slug("btc", 5, at=START + 10) == "btc-updown-5m-1791813600"
     assert get_current_active_slug("eth", 15, at=START + 899) == "eth-updown-15m-1791813600"
     assert get_current_active_slug("btc", 60, at=START + 5) == "bitcoin-up-or-down-october-12-2026-10am-et"
@@ -252,6 +287,7 @@ def main():
             test_decision_pending_holds_orders,
             test_cancel_when_nothing_fills,
             test_hedge_split,
+            test_stop_loss,
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,

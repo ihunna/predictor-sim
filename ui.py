@@ -86,6 +86,9 @@ def _side_line(state, label):
                              f"{format_time(state.cancelled_time_left)} left")
             else:
                 parts.append(f"⏳ {o.contracts} @ {round(o.price * 100)}¢{tag} not filled")
+        if state.stop_side == label:
+            parts.append(f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ (stop-loss) at "
+                         f"{format_time(state.stop_time_left)} left")
         fill = " + ".join(parts) or "never placed"
     low_at = f" at {format_time(lowest_left)} left" if lowest_left is not None else ""
     return f"   {label:<5} {fill:<34} | low {format_lowest_cents(lowest)}{low_at}"
@@ -412,12 +415,19 @@ class Dashboard:
                             order_lines.append(Text(
                                 f"🛑 cancelled at {clock(state.cancelled_time_left)} (nothing filled)",
                                 style="bold yellow"))
+                        elif state.stop_time_left is not None:
+                            order_lines.append(Text(f"🛑 {o.contracts} @ {round(o.price * 100)}¢ cancelled (stop-loss)",
+                                                    style="dim"))
                         else:
                             line = Text(f"⏳ buying {o.contracts} @ {round(o.price * 100)}¢{tag}", style="yellow")
                             if cancel_at and state.fill_type == "none":
                                 line.append(f"  (cancel {datetime.fromtimestamp(cancel_at).strftime('%H:%M:%S')})",
                                             style="dim")
                             order_lines.append(line)
+                if state.stop_side == label:
+                    order_lines.append(Text(
+                        f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ (stop-loss) at "
+                        f"{clock(state.stop_time_left)}", style="bold red"))
                 filled_left = state.first_fill_time_left(label)
                 cheapest = Text()
                 cheapest.append("cheapest ", style="dim")
@@ -443,7 +453,7 @@ class Dashboard:
                 _, if_up = sim.compute_result(state, "Up", state.maker_fee_bps, state.taker_fee_bps)
                 _, if_down = sim.compute_result(state, "Down", state.maker_fee_bps, state.taker_fee_bps)
                 summary = Text("→ ", style="bold")
-                summary.append(f"Holding Up {state.contracts('Up')} · Down {state.contracts('Down')}: ", style="bold")
+                summary.append(f"Holding Up {state.held('Up')} · Down {state.held('Down')}: ", style="bold")
                 if abs(if_up - if_down) < 0.005:
                     summary.append(f"{if_up:+.2f}", style="bold green" if if_up >= 0 else "bold red")
                     summary.append(" whoever wins", style="bold")
@@ -553,14 +563,17 @@ class Dashboard:
             up_bid = 1.0 - down_ask if down_ask > 0 else 0.0
             down_bid = 1.0 - up_ask if up_ask > 0 else 0.0
             for label, bid in (("Up", up_bid), ("Down", down_bid)):
-                n = state.contracts(label)
-                if not n:
+                bought = state.contracts(label)
+                if not bought:
                     continue
-                side_cost = state.cost(label)
-                side_value = bid * n
-                cost += side_cost
-                value += side_value
-                position.append((label, n, state.avg_price(label), bid, side_value - side_cost))
+                n = state.held(label)
+                avg = state.avg_price(label)
+                cost += state.cost(label)
+                value += bid * n
+                if state.stop_side == label:
+                    value += state.stop_price * state.stop_contracts
+                if n:
+                    position.append((label, n, avg, bid, (bid - avg) * n))
 
         pending = [r for r in history
                    if r["status"] in ("official", "live") and r["trading"] and r["pnl"] is not None]

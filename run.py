@@ -233,6 +233,9 @@ def parse_args():
     parser.add_argument("--hedge-at", type=int, default=50, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
                              "even if it wins, the rest at --limit (default 50; 0 = off).")
+    parser.add_argument("--stop-loss-at", type=int, default=20, metavar="SECONDS_LEFT",
+                        help="With this many seconds left, if the window would lose with the side now leading as "
+                             "the winner, sell the losing side's unmatched contracts at its bid (default 20; 0 = off).")
     parser.add_argument("--cancel-left-pct", type=float, default=40.0,
                         help="Cancel both orders when nothing has filled and this much of the window is left, "
                              "in percent (default 40: 2:00 left of 5m, 6:00 of 15m, 24:00 of 60m; 0 = never).")
@@ -264,6 +267,8 @@ def main():
         raise SystemExit("--max-prev-move-pct must be >= 0")
     if args.hedge_at and not args.limit < args.hedge_at < 100:
         raise SystemExit("--hedge-at must be above --limit and below 100 (or 0 for off)")
+    if not 0 <= args.stop_loss_at < duration * 60:
+        raise SystemExit(f"--stop-loss-at must be between 0 and {duration * 60 - 1} seconds")
     if not 0 <= args.cancel_left_pct < 100:
         raise SystemExit("--cancel-left-pct must be between 0 and 100")
 
@@ -277,7 +282,8 @@ def main():
         capital, source = last_capital_after(trades_file, args.capital)
 
     sim = DualSim(coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source,
-                  max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct, hedge_cents=args.hedge_at)
+                  max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct, hedge_cents=args.hedge_at,
+                  stop_loss_seconds=args.stop_loss_at)
     print(f"⚙️  Predict.fun dual | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
     print(sim.summarize())
     print(f"📁 updown={updown_file} | trades={trades_file}")

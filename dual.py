@@ -44,6 +44,10 @@ TRADES_HEADER = [
     "hedge_fill_time_left",
     "other_low_after_first_fill",
     "other_low_after_first_fill_time_left",
+    "stop_side",
+    "stop_contracts",
+    "stop_price_cents",
+    "stop_time_left",
     "volume_usd",
     "up_ask_size_start",
     "up_ask_depth_5c_start",
@@ -150,6 +154,11 @@ class WindowState:
     first_fill_side: str | None = None
     other_low_after_first: float = float("inf")
     other_low_after_first_time_left: float | None = None
+    stop_checked: bool = False
+    stop_side: str | None = None
+    stop_contracts: int = 0
+    stop_price: float = 0.0
+    stop_time_left: float | None = None
     depth_start: dict | None = None
     depth_first_fill: dict | None = None
     volume_usd: float | None = None
@@ -173,6 +182,10 @@ class WindowState:
 
     def cost(self, side):
         return sum(o.fill_price * o.contracts for o in self.fills(side))
+
+    def held(self, side):
+        """Contracts still held: bought minus any sold by the stop-loss."""
+        return self.contracts(side) - (self.stop_contracts if self.stop_side == side else 0)
 
     def avg_price(self, side):
         n = self.contracts(side)
@@ -225,8 +238,9 @@ class WindowState:
 
 class DualSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
-                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=50):
+                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=50, stop_loss_seconds=20):
         self.max_prev_move_pct = max_prev_move_pct
+        self.stop_loss_seconds = stop_loss_seconds
         self.cancel_left_pct = cancel_left_pct
         self.hedge_cents = hedge_cents
         self.hedge = hedge_cents / 100.0
@@ -256,9 +270,13 @@ class DualSim:
             f"after one side fills, lock in at {self.hedge_cents}¢ on the other"
             if self.hedge_cents > 0 else "no hedge"
         )
+        stop = (
+            f"stop-loss at {format_time(self.stop_loss_seconds)} left"
+            if self.stop_loss_seconds > 0 else "no stop-loss"
+        )
         return (
             f"🎯 Dual: {self.limit_cents}¢ limit on Up and Down, {self.contracts} contracts each, placed {when}, "
-            f"{hedge}, {cancel}, {skip} | capital ${self.capital:.2f} ({self.capital_source})"
+            f"{hedge}, {cancel}, {stop}, {skip} | capital ${self.capital:.2f} ({self.capital_source})"
         )
 
     def hedge_contracts(self, first_cost):
@@ -311,7 +329,8 @@ class DualSim:
             state.lowest_down = down_ask
             state.lowest_down_time_left = remaining
 
-        if not state.trading or state.decision_pending or state.cancelled_time_left is not None:
+        if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
+                or state.stop_time_left is not None):
             return
 
         cancel_left = self.cancel_left_seconds()
@@ -339,6 +358,28 @@ class DualSim:
             order.check(remaining, asks[order.side])
         self._track_other_side(state, remaining, asks)
         self._maybe_hedge(state, remaining, asks)
+        self._maybe_stop(state, remaining, asks)
+
+    def _maybe_stop(self, state, remaining, asks):
+        """Once, at ``stop_loss_seconds`` left: if the window would lose with the side now leading as the winner,
+        sell the losing side's unmatched contracts at its bid (1 - the leading side's ask) and cancel open orders."""
+        if self.stop_loss_seconds <= 0 or state.stop_checked or remaining > self.stop_loss_seconds:
+            return
+        if asks["Up"] <= 0 or asks["Down"] <= 0 or asks["Up"] == asks["Down"]:
+            return
+        state.stop_checked = True
+        if state.fill_type == "none":
+            return
+        leader = "Up" if asks["Up"] > asks["Down"] else "Down"
+        loser = "Down" if leader == "Up" else "Up"
+        _, projected = self.compute_result(state, leader, state.maker_fee_bps, state.taker_fee_bps)
+        excess = state.held(loser) - state.held(leader)
+        bid = round(1.0 - asks[leader], 4)
+        if projected >= 0 or excess <= 0 or bid <= 0:
+            return
+        state.stop_side, state.stop_contracts, state.stop_price = loser, excess, bid
+        state.stop_time_left = remaining
+        state.notes.append(f"stop_sold_{loser.lower()}_{excess}@{round(bid * 100)}_at_{format_time(remaining)}_left")
 
     def _track_other_side(self, state, remaining, asks):
         """Cheapest ask of the side that did not fill first, from the first fill on (shows how close it came)."""
@@ -399,10 +440,15 @@ class DualSim:
             cost += order.fill_price * order.contracts
             bps = taker_fee_bps if order.taker else maker_fee_bps
             fee += order.fill_price * order.contracts * bps / 10000.0
-            if outcome == order.side:
-                payout += order.contracts
+        if state.stop_side:
+            sale = state.stop_price * state.stop_contracts
+            payout += sale
+            fee += sale * taker_fee_bps / 10000.0
+        for side in ("Up", "Down"):
+            if outcome == side:
+                payout += state.held(side)
             elif outcome == "Tie":
-                payout += 0.5 * order.contracts
+                payout += 0.5 * state.held(side)
         if outcome not in ("Up", "Down", "Tie"):
             return round(fee, 4), None
         return round(fee, 4), round(payout - cost - fee, 4)
@@ -454,6 +500,10 @@ class DualSim:
                 "hedge_fill_time_left": _secs(hedge.fill_time_left) if hedge else "",
                 "other_low_after_first_fill": _cents(state.other_low_after_first),
                 "other_low_after_first_fill_time_left": _secs(state.other_low_after_first_time_left),
+                "stop_side": state.stop_side or "",
+                "stop_contracts": state.stop_contracts if state.stop_side else "",
+                "stop_price_cents": _cents(state.stop_price) if state.stop_side else "",
+                "stop_time_left": _secs(state.stop_time_left),
                 "volume_usd": f"{state.volume_usd:.2f}" if state.volume_usd is not None else "",
                 "up_ask_size_start": _shares(state.depth_start, "up_ask_size"),
                 "up_ask_depth_5c_start": _shares(state.depth_start, "up_ask_depth"),
