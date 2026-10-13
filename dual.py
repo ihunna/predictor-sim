@@ -244,7 +244,7 @@ class WindowState:
 
 class DualSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
-                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=50, stop_loss_seconds=20, stop_loss_live=False):
+                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live

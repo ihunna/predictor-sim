@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 DEFAULT_HOST = "root@187.7.17.28"
-DEFAULT_REMOTE_DIR = "~/predict-bot"
+DEFAULT_REMOTE_DIR = "~/predictor-sim"
 DEFAULT_FILES = [
     "*-predict-dual-trades.csv",
     "*-updown.csv",

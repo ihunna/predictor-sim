@@ -230,12 +230,12 @@ def parse_args():
     parser.add_argument("--max-prev-move-pct", type=float, default=0.10, metavar="PCT",
                         help="Skip trading a window when the last one moved this many percent or more "
                              "(default 0.10; 0 = off).")
-    parser.add_argument("--hedge-at", type=int, default=50, metavar="CENTS",
+    parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
-                             "even if it wins, the rest at --limit (default 50; 0 = off).")
-    parser.add_argument("--stop-loss-at", type=int, default=20, metavar="SECONDS_LEFT",
+                             "even if it wins, the rest at --limit (default 0 = off; e.g. 50).")
+    parser.add_argument("--stop-loss-at", type=int, default=0, metavar="SECONDS_LEFT",
                         help="With this many seconds left, if the window would lose with the side now leading as "
-                             "the winner, sell the losing side's unmatched contracts at its bid (default 20; 0 = off). "
+                             "the winner, sell the losing side's unmatched contracts at its bid (default 0 = off; e.g. 20). "
                              "Only logged (would_stop_* columns) unless --stop-loss-live is given.")
     parser.add_argument("--stop-loss-live", action="store_true",
                         help="Actually sell when the stop-loss fires, instead of only logging it.")
