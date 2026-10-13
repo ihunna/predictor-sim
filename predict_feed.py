@@ -334,6 +334,16 @@ class PredictWS:
         with self.lock:
             return len(self.markets) > 1
 
+    def next_market(self):
+        """The next window's market id once ``prepare_next`` has added it, else None."""
+        with self.lock:
+            return self.markets[1] if len(self.markets) > 1 else None
+
+    def next_market(self):
+        """The next window's market id once ``prepare_next`` has added it, else None."""
+        with self.lock:
+            return self.markets[1] if len(self.markets) > 1 else None
+
     def latest_price(self):
         with self.lock:
             if not self.prices:

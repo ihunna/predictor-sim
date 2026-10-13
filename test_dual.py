@@ -272,6 +272,30 @@ def test_book_averages(tmp):
     assert row["volume_usd_early"] == "1234.50" and row["volume_early_time_left"] == 240
 
 
+def test_open_and_end_asks(tmp):
+    sim = new_sim(tmp)
+    state = sim.start_window(START, END, "s", "1", now=START)
+    state.preopen_asks = (0.56, 0.45)
+    for off, u, d in [(0, 0.0, 0.5), (1, 0.55, 0.47), (100, 0.40, 0.61), (291, 0.80, 0.21), (295, 0.90, 0.11)]:
+        sim.on_tick(START + off, u, d)
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["preopen_up_ask"] == 56 and row["preopen_down_ask"] == 45
+    assert row["open_up_ask"] == 55 and row["open_down_ask"] == 47 and row["open_time_left"] == 299
+    assert row["up_ask_10s_left"] == 80 and row["down_ask_10s_left"] == 21
+
+
+def test_open_and_end_asks(tmp):
+    sim = new_sim(tmp)
+    state = sim.start_window(START, END, "s", "1", now=START)
+    state.preopen_asks = (0.56, 0.45)
+    for off, u, d in [(0, 0.0, 0.5), (1, 0.55, 0.47), (100, 0.40, 0.61), (291, 0.80, 0.21), (295, 0.90, 0.11)]:
+        sim.on_tick(START + off, u, d)
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["preopen_up_ask"] == 56 and row["preopen_down_ask"] == 45
+    assert row["open_up_ask"] == 55 and row["open_down_ask"] == 47 and row["open_time_left"] == 299
+    assert row["up_ask_10s_left"] == 80 and row["down_ask_10s_left"] == 21
+
+
 def test_tie(tmp):
     sim = new_sim(tmp)
     state = run_window(sim, [(0, 0.29, 0.29)])
@@ -346,6 +370,7 @@ def main():
             test_stop_loss_logged_only,
             test_cheap_side_bounces,
             test_book_averages,
+            test_open_and_end_asks,
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,

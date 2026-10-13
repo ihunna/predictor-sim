@@ -16,6 +16,7 @@ from datetime import datetime
 from logs import format_time
 
 CHEAP_LEVELS = (40, 30, 20, 15, 10, 5)
+END_SAMPLE_SECONDS = 10
 
 TRADES_HEADER = [
     "window_start",
@@ -28,6 +29,13 @@ TRADES_HEADER = [
     "prev_window_move",
     "limit_cents",
     "contracts",
+    "preopen_up_ask",
+    "preopen_down_ask",
+    "open_up_ask",
+    "open_down_ask",
+    "open_time_left",
+    "up_ask_10s_left",
+    "down_ask_10s_left",
     "placed_time_left",
     "up_ask_at_place",
     "down_ask_at_place",
@@ -234,6 +242,10 @@ class WindowState:
     stop_price: float = 0.0
     stop_time_left: float | None = None
     would_stop: tuple | None = None  # (side, contracts, bid, time_left) when the stop-loss is only logged
+    open_asks: tuple | None = None  # (up, down) at the first tick with both asks
+    open_time_left: float | None = None
+    preopen_asks: tuple | None = None  # (up, down) of this market sampled shortly before it opened
+    asks_end: tuple | None = None  # (up, down) at the first tick with END_SAMPLE_SECONDS or less left
     cheap_up: dict = field(default_factory=cheap_watches)
     cheap_down: dict = field(default_factory=cheap_watches)
     depth_start: dict | None = None
@@ -437,6 +449,11 @@ class DualSim:
             watch.update(remaining, up_ask, up_bid)
         for watch in state.cheap_down.values():
             watch.update(remaining, down_ask, down_bid)
+        if up_ask > 0 and down_ask > 0:
+            if state.open_asks is None:
+                state.open_asks, state.open_time_left = (up_ask, down_ask), remaining
+            if state.asks_end is None and remaining <= END_SAMPLE_SECONDS:
+                state.asks_end = (up_ask, down_ask)
 
         if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
                 or state.stop_time_left is not None):
@@ -608,6 +625,13 @@ class DualSim:
                 "prev_window_move": f"{prev_move:+.4f}" if prev_move is not None else "",
                 "limit_cents": self.limit_cents,
                 "contracts": self.contracts,
+                "preopen_up_ask": _cents(state.preopen_asks[0]) if state.preopen_asks else "",
+                "preopen_down_ask": _cents(state.preopen_asks[1]) if state.preopen_asks else "",
+                "open_up_ask": _cents(state.open_asks[0]) if state.open_asks else "",
+                "open_down_ask": _cents(state.open_asks[1]) if state.open_asks else "",
+                "open_time_left": _secs(state.open_time_left),
+                "up_ask_10s_left": _cents(state.asks_end[0]) if state.asks_end else "",
+                "down_ask_10s_left": _cents(state.asks_end[1]) if state.asks_end else "",
                 "placed_time_left": _secs(state.placed_time_left),
                 "up_ask_at_place": _cents(state.up_ask_at_place),
                 "down_ask_at_place": _cents(state.down_ask_at_place),

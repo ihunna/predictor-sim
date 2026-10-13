@@ -41,6 +41,10 @@ RESOLUTION_CHECK_ATTEMPTS = 4
 RESOLUTION_CHECK_POLL_SECONDS = 15
 EARLY_VOLUME_PCT = 20
 VOLUME_POLL_SECONDS = 15
+PREOPEN_SAMPLE_SECONDS = 10
+preopen_asks = {}  # window_start -> (up, down) of that market sampled PREOPEN_SAMPLE_SECONDS before it opened
+PREOPEN_SAMPLE_SECONDS = 10
+preopen_asks = {}  # window_start -> (up, down) of that market sampled PREOPEN_SAMPLE_SECONDS before it opened
 
 
 def prepare_next_window(ws, coin, duration, next_start):
@@ -187,6 +191,8 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
     skip_reason = "no_ptb" if price_to_beat <= 0 else None
     state = sim.start_window(window_start, window_end, slug, market_id, skip_reason=skip_reason,
                              decision_pending=skip_reason is None)
+    state.preopen_asks = preopen_asks.pop(window_start, None)
+    state.preopen_asks = preopen_asks.pop(window_start, None)
     threading.Thread(target=load_fees, args=(state,), daemon=True).start()
     if skip_reason == "no_ptb":
         skip_message = "No Price to Beat given: logging this window without trading."
@@ -199,6 +205,8 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
     next_prepared = False
     early_volume_asked = False
     last_volume_poll = 0.0
+    preopen_sampled = False
+    preopen_sampled = False
 
     while True:
         now = time.time()
@@ -207,6 +215,14 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
         if not next_prepared and remaining <= NEXT_WINDOW_SUBSCRIBE_SECONDS:
             next_prepared = True
             threading.Thread(target=prepare_next_window, args=(ws, coin, duration, window_end), daemon=True).start()
+
+        if not preopen_sampled and remaining <= PREOPEN_SAMPLE_SECONDS:
+            next_id = ws.next_market()
+            if next_id:
+                next_up, next_down = ws.asks(next_id)
+                if next_up > 0 and next_down > 0:
+                    preopen_asks[window_end] = (next_up, next_down)
+                    preopen_sampled = True
 
         if now >= window_end:
             state = sim.finish_window()
