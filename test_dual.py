@@ -248,6 +248,9 @@ def test_cheap_side_bounces(tmp):
     assert row["up_bounces_11c_after_5c"] == 2 and row["down_touch_5c_time_left"] == ""
     assert row["up_touch_10c_time_left"] == 250 and row["up_bounces_21c_after_10c"] == 0
     assert row["up_max_bid_after_20c"] == 13 and row["down_bounces_41c_after_20c"] == ""
+    # 40¢ level: Up first at 7¢ (250s left) too, since the 50¢ open never reached 40¢
+    assert row["up_touch_40c_time_left"] == 250 and row["up_max_bid_after_30c"] == 13
+    assert row["up_bounces_81c_after_40c"] == 0 and row["down_touch_30c_time_left"] == ""
     # logged for skipped windows too
     sim.start_window(START, END, "s", "1", now=START, skip_reason="no_ptb")
     for off, u, d in ticks:

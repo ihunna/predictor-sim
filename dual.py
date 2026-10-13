@@ -15,7 +15,7 @@ from datetime import datetime
 
 from logs import format_time
 
-CHEAP_LEVELS = (20, 15, 10, 5)
+CHEAP_LEVELS = (40, 30, 20, 15, 10, 5)
 
 TRADES_HEADER = [
     "window_start",
