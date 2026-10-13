@@ -15,6 +15,8 @@ from datetime import datetime
 
 from logs import format_time
 
+CHEAP_LEVELS = (20, 15, 10, 5)
+
 TRADES_HEADER = [
     "window_start",
     "slug",
@@ -53,6 +55,17 @@ TRADES_HEADER = [
     "would_stop_price_cents",
     "would_stop_time_left",
     "would_stop_saved",
+    *[
+        name
+        for side in ("up", "down")
+        for level in CHEAP_LEVELS
+        for name in (
+            f"{side}_touch_{level}c_time_left",
+            f"{side}_max_bid_after_{level}c",
+            f"{side}_max_bid_after_{level}c_time_left",
+            f"{side}_bounces_{2 * level + 1}c_after_{level}c",
+        )
+    ],
     "volume_usd",
     "up_ask_size_start",
     "up_ask_depth_5c_start",
@@ -70,6 +83,43 @@ TRADES_HEADER = [
 ]
 
 JOINED_LATE_SECONDS = 10
+@dataclass
+class CheapWatch:
+    """After a side's ask first reaches `level` cents: its best bid since (1 - the other side's ask) and how many
+    times that bid climbed back to 2*level+1 cents (counted again only after dropping two thirds of the way back)."""
+    level: int
+    touch_time_left: float | None = None
+    max_bid: float = 0.0
+    max_bid_time_left: float | None = None
+    bounces: int = 0
+    above: bool = False
+
+    @property
+    def bounce_cents(self):
+        return 2 * self.level + 1
+
+    @property
+    def reset_cents(self):
+        return self.level + round((self.bounce_cents - self.level) * 2 / 3)
+
+    def update(self, remaining, ask, bid):
+        if self.touch_time_left is None:
+            if 0.0 < ask <= self.level / 100 + 1e-9:
+                self.touch_time_left = remaining
+            return
+        if bid <= 0:
+            return
+        if bid > self.max_bid:
+            self.max_bid, self.max_bid_time_left = bid, remaining
+        if not self.above and bid >= self.bounce_cents / 100 - 1e-9:
+            self.bounces += 1
+            self.above = True
+        elif self.above and bid < self.reset_cents / 100 - 1e-9:
+            self.above = False
+
+
+def cheap_watches():
+    return {level: CheapWatch(level) for level in CHEAP_LEVELS}
 
 
 def last_capital_after(path, default):
@@ -104,6 +154,17 @@ def migrate_trades_file(path, old_header):
 
 def _cents(price):
     return round(price * 100) if price and price != float("inf") else ""
+
+
+def _cheap_columns(side, watches):
+    columns = {}
+    for level, watch in watches.items():
+        touched = watch.touch_time_left is not None
+        columns[f"{side}_touch_{level}c_time_left"] = _secs(watch.touch_time_left)
+        columns[f"{side}_max_bid_after_{level}c"] = _cents(watch.max_bid) if touched else ""
+        columns[f"{side}_max_bid_after_{level}c_time_left"] = _secs(watch.max_bid_time_left)
+        columns[f"{side}_bounces_{watch.bounce_cents}c_after_{level}c"] = watch.bounces if touched else ""
+    return columns
 
 
 def _shares(depth, key):
@@ -165,6 +226,8 @@ class WindowState:
     stop_price: float = 0.0
     stop_time_left: float | None = None
     would_stop: tuple | None = None  # (side, contracts, bid, time_left) when the stop-loss is only logged
+    cheap_up: dict = field(default_factory=cheap_watches)
+    cheap_down: dict = field(default_factory=cheap_watches)
     depth_start: dict | None = None
     depth_first_fill: dict | None = None
     volume_usd: float | None = None
@@ -337,6 +400,12 @@ class DualSim:
         if 0.0 < down_ask <= 1.0 and down_ask < state.lowest_down:
             state.lowest_down = down_ask
             state.lowest_down_time_left = remaining
+        up_bid = round(1.0 - down_ask, 4) if down_ask > 0 else 0.0
+        down_bid = round(1.0 - up_ask, 4) if up_ask > 0 else 0.0
+        for watch in state.cheap_up.values():
+            watch.update(remaining, up_ask, up_bid)
+        for watch in state.cheap_down.values():
+            watch.update(remaining, down_ask, down_bid)
 
         if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
                 or state.stop_time_left is not None):
@@ -535,6 +604,8 @@ class DualSim:
                 "would_stop_price_cents": _cents(state.would_stop[2]) if state.would_stop else "",
                 "would_stop_time_left": _secs(state.would_stop[3]) if state.would_stop else "",
                 "would_stop_saved": f"{saved:+.4f}" if saved is not None else "",
+                **_cheap_columns("up", state.cheap_up),
+                **_cheap_columns("down", state.cheap_down),
                 "volume_usd": f"{state.volume_usd:.2f}" if state.volume_usd is not None else "",
                 "up_ask_size_start": _shares(state.depth_start, "up_ask_size"),
                 "up_ask_depth_5c_start": _shares(state.depth_start, "up_ask_depth"),

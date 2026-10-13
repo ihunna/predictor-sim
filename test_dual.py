@@ -231,6 +231,30 @@ def test_stop_loss_logged_only(tmp):
     assert sim.would_stop_saved(state, "Up") == round(1.20 - 8, 4)
 
 
+def test_cheap_side_bounces(tmp):
+    sim = new_sim(tmp)
+    # Up drops to 5¢ at 200s left, its bid (1 - Down ask) bounces to 11¢, 7¢, 12¢, 13¢, then dies
+    ticks = [(0, 0.50, 0.51), (50, 0.07, 0.94), (100, 0.05, 0.96), (120, 0.12, 0.89), (130, 0.08, 0.93),
+             (140, 0.13, 0.88), (150, 0.14, 0.87), (200, 0.02, 0.99)]
+    state = run_window(sim, ticks)
+    up = state.cheap_up[5]
+    assert up.touch_time_left == 200 and up.max_bid == 0.13 and up.max_bid_time_left == 150 and up.bounces == 2
+    # 20¢ level: touched at 250s left (7¢), best bid 13¢, never back to 41¢
+    up20 = state.cheap_up[20]
+    assert up20.touch_time_left == 250 and up20.max_bid == 0.13 and up20.bounces == 0
+    assert state.cheap_down[20].touch_time_left is None
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert row["up_touch_5c_time_left"] == 200 and row["up_max_bid_after_5c"] == 13
+    assert row["up_bounces_11c_after_5c"] == 2 and row["down_touch_5c_time_left"] == ""
+    assert row["up_touch_10c_time_left"] == 250 and row["up_bounces_21c_after_10c"] == 0
+    assert row["up_max_bid_after_20c"] == 13 and row["down_bounces_41c_after_20c"] == ""
+    # logged for skipped windows too
+    sim.start_window(START, END, "s", "1", now=START, skip_reason="no_ptb")
+    for off, u, d in ticks:
+        sim.on_tick(START + off, u, d)
+    assert sim.finish_window().cheap_up[5].bounces == 2
+
+
 def test_tie(tmp):
     sim = new_sim(tmp)
     state = run_window(sim, [(0, 0.29, 0.29)])
@@ -303,6 +327,7 @@ def main():
             test_hedge_split,
             test_stop_loss,
             test_stop_loss_logged_only,
+            test_cheap_side_bounces,
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,
