@@ -67,12 +67,20 @@ TRADES_HEADER = [
         )
     ],
     "volume_usd",
+    "volume_usd_early",
+    "volume_early_time_left",
     "up_ask_size_start",
     "up_ask_depth_5c_start",
     "down_ask_size_start",
     "down_ask_depth_5c_start",
     "up_ask_depth_5c_first_fill",
     "down_ask_depth_5c_first_fill",
+    "up_ask_size_avg",
+    "up_ask_depth_5c_avg",
+    "down_ask_size_avg",
+    "down_ask_depth_5c_avg",
+    "spread_cents_avg",
+    "book_samples",
     "fill_type",
     "outcome",
     "fee",
@@ -230,7 +238,13 @@ class WindowState:
     cheap_down: dict = field(default_factory=cheap_watches)
     depth_start: dict | None = None
     depth_first_fill: dict | None = None
+    depth_sums: dict = field(default_factory=dict)
+    depth_samples: int = 0
+    spread_sum: float = 0.0
+    spread_samples: int = 0
     volume_usd: float | None = None
+    volume_early_usd: float | None = None
+    volume_early_time_left: float | None = None
     trading: bool = True
     decision_pending: bool = False
     cancelled_time_left: float | None = None
@@ -238,6 +252,19 @@ class WindowState:
     maker_fee_bps: int = 0
     taker_fee_bps: int = 0
     notes: list = field(default_factory=list)
+
+    def record_book(self, depth, up_ask, down_ask):
+        """One order-book sample per tick, for the window's average depth and spread."""
+        if depth:
+            for key, value in depth.items():
+                self.depth_sums[key] = self.depth_sums.get(key, 0.0) + value
+            self.depth_samples += 1
+        if up_ask > 0 and down_ask > 0:
+            self.spread_sum += up_ask + down_ask - 1.0
+            self.spread_samples += 1
+
+    def depth_avg(self, key):
+        return self.depth_sums.get(key, 0.0) / self.depth_samples if self.depth_samples else None
 
     def side_orders(self, side):
         rank = {"main": 0, "hedge": 1, "profit": 2}
@@ -607,12 +634,24 @@ class DualSim:
                 **_cheap_columns("up", state.cheap_up),
                 **_cheap_columns("down", state.cheap_down),
                 "volume_usd": f"{state.volume_usd:.2f}" if state.volume_usd is not None else "",
+                "volume_usd_early": f"{state.volume_early_usd:.2f}" if state.volume_early_usd is not None else "",
+                "volume_early_time_left": _secs(state.volume_early_time_left),
                 "up_ask_size_start": _shares(state.depth_start, "up_ask_size"),
                 "up_ask_depth_5c_start": _shares(state.depth_start, "up_ask_depth"),
                 "down_ask_size_start": _shares(state.depth_start, "down_ask_size"),
                 "down_ask_depth_5c_start": _shares(state.depth_start, "down_ask_depth"),
                 "up_ask_depth_5c_first_fill": _shares(state.depth_first_fill, "up_ask_depth"),
                 "down_ask_depth_5c_first_fill": _shares(state.depth_first_fill, "down_ask_depth"),
+                **{
+                    f"{key.replace('_depth', '_depth_5c')}_avg": (
+                        f"{state.depth_avg(key):.2f}" if state.depth_samples else ""
+                    )
+                    for key in ("up_ask_size", "up_ask_depth", "down_ask_size", "down_ask_depth")
+                },
+                "spread_cents_avg": (
+                    f"{state.spread_sum / state.spread_samples * 100:.2f}" if state.spread_samples else ""
+                ),
+                "book_samples": state.depth_samples,
                 "fill_type": state.fill_type,
                 "outcome": outcome,
                 "fee": f"{fee:.4f}",

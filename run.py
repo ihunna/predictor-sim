@@ -39,6 +39,7 @@ TICK_SECONDS = 0.2
 OFFICIAL_PRICE_WAIT_SECONDS = 10
 RESOLUTION_CHECK_ATTEMPTS = 4
 RESOLUTION_CHECK_POLL_SECONDS = 15
+EARLY_VOLUME_PCT = 20
 
 
 def prepare_next_window(ws, coin, duration, next_start):
@@ -55,6 +56,13 @@ def load_fees(state):
     if info:
         state.maker_fee_bps = info["maker_fee_bps"]
         state.taker_fee_bps = info["taker_fee_bps"]
+
+
+def load_early_volume(state, remaining):
+    info = fetch_market(state.market_id)
+    if info:
+        state.volume_early_usd = info["volume_usd"]
+        state.volume_early_time_left = remaining
 
 
 def previous_window_prices(ws, coin, duration, window_start, timeout):
@@ -181,6 +189,7 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
     ui.window_started(state, title, slug, market_id, price_to_beat, None, skip_message)
     threading.Thread(target=decide_window, args=(ui, ws, sim, state, coin, duration, feed_id), daemon=True).start()
     next_prepared = False
+    early_volume_asked = False
 
     while True:
         now = time.time()
@@ -207,6 +216,10 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
             state.depth_start = ws.depth(market_id)
         if state.depth_first_fill is None and state.fill_type != "none":
             state.depth_first_fill = ws.depth(market_id)
+        state.record_book(ws.depth(market_id), up_ask, down_ask)
+        if not early_volume_asked and remaining <= (window_end - window_start) * (1 - EARLY_VOLUME_PCT / 100):
+            early_volume_asked = True
+            threading.Thread(target=load_early_volume, args=(state, remaining), daemon=True).start()
 
         socket_info = {
             "connected": ws.connected,

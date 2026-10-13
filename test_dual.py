@@ -255,6 +255,20 @@ def test_cheap_side_bounces(tmp):
     assert sim.finish_window().cheap_up[5].bounces == 2
 
 
+def test_book_averages(tmp):
+    sim = new_sim(tmp)
+    state = sim.start_window(START, END, "s", "1", now=START)
+    state.record_book({"up_ask_size": 100, "up_ask_depth": 300, "down_ask_size": 50, "down_ask_depth": 200}, 0.52, 0.50)
+    state.record_book({"up_ask_size": 200, "up_ask_depth": 500, "down_ask_size": 150, "down_ask_depth": 400}, 0.51, 0.51)
+    state.record_book(None, 0.0, 0.5)
+    state.volume_early_usd, state.volume_early_time_left = 1234.5, 240
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["up_ask_size_avg"] == "150.00" and row["up_ask_depth_5c_avg"] == "400.00"
+    assert row["down_ask_depth_5c_avg"] == "300.00" and row["book_samples"] == 2
+    assert row["spread_cents_avg"] == "2.00", row["spread_cents_avg"]
+    assert row["volume_usd_early"] == "1234.50" and row["volume_early_time_left"] == 240
+
+
 def test_tie(tmp):
     sim = new_sim(tmp)
     state = run_window(sim, [(0, 0.29, 0.29)])
@@ -328,6 +342,7 @@ def main():
             test_stop_loss,
             test_stop_loss_logged_only,
             test_cheap_side_bounces,
+            test_book_averages,
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,
