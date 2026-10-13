@@ -11,7 +11,7 @@ import socket
 import threading
 import time
 
-from dual import DualSim, last_capital_after
+from dual import DualSim, last_capital_after, last_reloaded_total
 from logs import format_lowest_cents, log_to_csv
 from predict_feed import (
     CHAINLINK_FEED_IDS,
@@ -200,6 +200,9 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
     else:
         skip_message = None
     ui.window_started(state, title, slug, market_id, price_to_beat, None, skip_message)
+    if state.reload:
+        ui.event(f"💰 Balance too low for both orders: reloaded +${state.reload:.2f} to ${sim.capital:.2f} "
+                 f"(${sim.reloaded_total:.2f} reloaded in total)")
     threading.Thread(target=decide_window, args=(ui, ws, sim, state, coin, duration, feed_id), daemon=True).start()
     next_prepared = False
     early_volume_asked = False
@@ -287,6 +290,9 @@ def parse_args():
                              "in percent (default 40: 2:00 left of 5m, 6:00 of 15m, 24:00 of 60m; 0 = never).")
     parser.add_argument("--capital", type=float, default=100.0,
                         help="Starting balance when there is no trades log yet (default 100).")
+    parser.add_argument("--reload-to", type=float, default=None, metavar="DOLLARS",
+                        help="When the balance can't cover both orders at a window's start, top it back up to this "
+                             "(default: --capital; 0 = never). Top-ups are logged in reload / reloaded_total.")
     parser.add_argument("--capital-last", type=float, default=None, metavar="EQUITY",
                         help="Restore the starting balance (overrides the last capital_after in the log).")
     parser.add_argument("--feed-id", type=int, default=None,
@@ -330,7 +336,9 @@ def main():
     sim = DualSim(coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source,
                   max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct, hedge_cents=args.hedge_at,
                   stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,
-                  stop_loss_min_cents=args.stop_loss_min)
+                  stop_loss_min_cents=args.stop_loss_min,
+                  reload_to=args.capital if args.reload_to is None else args.reload_to,
+                  reloaded_total=last_reloaded_total(trades_file))
     print(f"⚙️  Predict.fun dual | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
     print(sim.summarize())
     print(f"📁 updown={updown_file} | trades={trades_file}")

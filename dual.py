@@ -117,6 +117,8 @@ TRADES_HEADER = [
     "pnl",
     "capital_before",
     "capital_after",
+    "reload",
+    "reloaded_total",
     "notes",
 ]
 
@@ -196,6 +198,20 @@ def last_capital_after(path, default):
         return (float(last), "log") if last is not None else (default, "default")
     except ValueError:
         return default, "default"
+
+
+def last_reloaded_total(path):
+    """Total topped up so far: the last reloaded_total in the trades log, else 0."""
+    if not path or not os.path.isfile(path):
+        return 0.0
+    last = 0.0
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                last = float(row.get("reloaded_total") or last)
+            except ValueError:
+                pass
+    return last
 
 
 def migrate_trades_file(path, old_header):
@@ -296,6 +312,7 @@ class WindowState:
     stop_price: float = 0.0
     stop_time_left: float | None = None
     would_stop: tuple | None = None  # (side, contracts, bid, time_left) when the stop-loss is only logged
+    reload: float = 0.0  # dollars topped up at the start of this window
     # seconds -> (side, contracts, bid, orders filled by then): the stop-loss rule checked at each STOP_CHECK_SECONDS
     stop_checks: dict = field(default_factory=dict)
     stop_checks_done: set = field(default_factory=set)
@@ -410,11 +427,13 @@ class WindowState:
 class DualSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
-                 stop_loss_min_cents=0):
+                 stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
         self.stop_loss_min_cents = stop_loss_min_cents
+        self.reload_to = float(reload_to)
+        self.reloaded_total = float(reloaded_total)
         self.cancel_left_pct = cancel_left_pct
         self.hedge_cents = hedge_cents
         self.hedge = hedge_cents / 100.0
@@ -476,6 +495,10 @@ class DualSim:
             return f"prev_move_{prev_move_pct:+.3f}pct"
         return None
 
+    def order_cost(self):
+        """Dollars both main orders need if they fill."""
+        return 2 * self.contracts * self.limit_cents / 100
+
     def start_window(self, window_start, window_end, slug, market_id, now=None, skip_reason=None,
                      decision_pending=False):
         """``skip_reason`` (e.g. ``no_ptb``) logs the window without trading it. ``decision_pending`` holds the
@@ -483,6 +506,11 @@ class DualSim:
         now = time.time() if now is None else now
         state = WindowState(window_start=window_start, window_end=window_end, slug=slug, market_id=str(market_id),
                             decision_pending=decision_pending)
+        if self.reload_to > 0 and self.capital < self.order_cost():
+            state.reload = round(self.reload_to - self.capital, 4)
+            self.capital = self.reload_to
+            self.reloaded_total = round(self.reloaded_total + state.reload, 4)
+            state.notes.append(f"reloaded_{state.reload:+.2f}")
         if skip_reason:
             state.trading = False
             state.notes.append(skip_reason)
@@ -814,6 +842,8 @@ class DualSim:
                 "pnl": f"{pnl:.4f}" if pnl is not None else "",
                 "capital_before": f"{capital_before:.4f}",
                 "capital_after": f"{self.capital:.4f}",
+                "reload": f"{state.reload:.4f}" if state.reload else "",
+                "reloaded_total": f"{self.reloaded_total:.4f}",
                 "notes": ";".join(all_notes),
             }
             self._write_row(row)

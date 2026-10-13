@@ -4,7 +4,7 @@ import csv
 import os
 import tempfile
 
-from dual import TRADES_HEADER, DualSim, last_capital_after
+from dual import TRADES_HEADER, DualSim, last_capital_after, last_reloaded_total
 from logs import MARKET_CSV_HEADER, format_lowest_cents, log_to_csv
 from predict_feed import best_asks, book_depth, get_current_active_slug, window_bounds
 
@@ -269,6 +269,24 @@ def test_stop_checkpoints(tmp):
     assert row["stop_side"] == "Up" and row["pnl"] == "-2.0000"
 
 
+def test_reload_when_balance_too_low(tmp):
+    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 3.0, "log", reload_to=100.0)
+    state = sim.start_window(START, END, "s", "1", now=START)
+    assert state.reload == 97.0 and sim.capital == 100.0 and sim.reloaded_total == 97.0
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["reload"] == "97.0000" and row["reloaded_total"] == "97.0000" and row["capital_before"] == "100.0000"
+    assert "reloaded_+97.00" in row["notes"]
+    # enough for both orders ($4.80): no reload; restart picks up the running total from the log
+    sim.capital = 4.80
+    state = sim.start_window(START + 300, END + 300, "s", "2", now=START + 300)
+    assert state.reload == 0.0 and sim.capital == 4.80
+    sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert last_reloaded_total(os.path.join(tmp, "trades.csv")) == 97.0
+    # off by default
+    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "t2.csv"), -1.0, "log")
+    assert sim.start_window(START, END, "s", "1", now=START).reload == 0.0 and sim.capital == -1.0
+
+
 def test_cheap_side_bounces(tmp):
     sim = new_sim(tmp)
     # Up drops to 5¢ at 200s left, its bid (1 - Down ask) bounces to 11¢, 7¢, 12¢, 13¢, then dies
@@ -417,6 +435,7 @@ def main():
             test_stop_loss_logged_only,
             test_stop_loss_minimum_price,
             test_stop_checkpoints,
+            test_reload_when_balance_too_low,
             test_cheap_side_bounces,
             test_rise_then_fall,
             test_book_averages,

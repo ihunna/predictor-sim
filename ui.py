@@ -223,6 +223,7 @@ class Dashboard:
         self.console = Console()
         self.lock = threading.Lock()
         self.start_capital = sim.capital
+        self.start_reloaded = sim.reloaded_total
         self.live = None
         self.state = None
         self.title = ""
@@ -664,9 +665,11 @@ class Dashboard:
                    if r["status"] in ("official", "live") and r["trading"] and r["pnl"] is not None]
         pending_pnl = sum(r["pnl"] for r in pending)
         equity = sim.capital + pending_pnl + (value - cost)
-        self.peak_equity = max(getattr(self, "peak_equity", self.start_capital), equity)
-        drawdown = equity - self.peak_equity
-        session = equity - self.start_capital
+        reloaded = sim.reloaded_total - self.start_reloaded
+        net_equity = equity - reloaded
+        self.peak_equity = max(getattr(self, "peak_equity", self.start_capital), net_equity)
+        drawdown = net_equity - self.peak_equity
+        session = net_equity - self.start_capital
 
         grid = Table.grid(padding=(0, 1), expand=True)
         grid.add_column(style="dim")
@@ -686,6 +689,8 @@ class Dashboard:
         pct = session / self.start_capital * 100 if self.start_capital else 0.0
         grid.add_row("Session", signed(session, f"{session:+.2f} ({pct:+.1f}%)"))
         grid.add_row("Drawdown", signed(drawdown, f"{drawdown:+.2f}") if drawdown < 0 else Text("0.00", style="dim"))
+        if sim.reloaded_total > 0:
+            grid.add_row("Reloaded", Text(f"${sim.reloaded_total:.2f} total", style="yellow"))
 
         recent = [r for r in history if r["trading"] and r["pnl"] is not None][:15]
         streak = Text()
