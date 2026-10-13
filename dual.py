@@ -238,6 +238,8 @@ class WindowState:
     cheap_down: dict = field(default_factory=cheap_watches)
     depth_start: dict | None = None
     depth_first_fill: dict | None = None
+    depth_now: dict | None = None
+    volume_live: float | None = None
     depth_sums: dict = field(default_factory=dict)
     depth_samples: int = 0
     spread_sum: float = 0.0
@@ -255,6 +257,7 @@ class WindowState:
 
     def record_book(self, depth, up_ask, down_ask):
         """One order-book sample per tick, for the window's average depth and spread."""
+        self.depth_now = depth
         if depth:
             for key, value in depth.items():
                 self.depth_sums[key] = self.depth_sums.get(key, 0.0) + value

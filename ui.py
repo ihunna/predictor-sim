@@ -69,6 +69,10 @@ def _format_pnl(pnl):
     return color_signed(pnl, f"{pnl:+.2f}") if pnl is not None else "n/a"
 
 
+def _shares_short(n):
+    return f"{n / 1000:.1f}k" if n >= 1000 else f"{n:.0f}"
+
+
 def _side_line(state, label):
     lowest = state.lowest_up if label == "Up" else state.lowest_down
     lowest_left = state.lowest_up_time_left if label == "Up" else state.lowest_down_time_left
@@ -468,6 +472,33 @@ class Dashboard:
                     summary.append(" · if Down wins ")
                     summary.append(f"{if_down:+.2f}", style="bold green" if if_down >= 0 else "bold red")
                 parts.append(summary)
+
+            parts.append(Text(""))
+            parts.append(Text("Order book", style="bold"))
+            market = Text()
+            market.append("  Volume ", style="dim")
+            market.append(f"${state.volume_live:,.0f}" if state.volume_live is not None else "--", style="bold")
+            market.append(" traded so far", style="dim")
+            if up_ask > 0 and down_ask > 0:
+                market.append("    gap between buy and sell ", style="dim")
+                market.append(f"{max(0, round((up_ask + down_ask - 1) * 100))}¢", style="bold")
+            parts.append(market)
+            depth = state.depth_now
+            on_offer = Text()
+            on_offer.append("  For sale ", style="dim")
+            if depth:
+                for i, (label, color) in enumerate((("Up", "green"), ("Down", "red"))):
+                    side = label.lower()
+                    if i:
+                        on_offer.append("    ", style="dim")
+                    on_offer.append(f"{label} ", style=color)
+                    on_offer.append(_shares_short(depth[f"{side}_ask_size"]), style="bold")
+                    on_offer.append(" at price · ", style="dim")
+                    on_offer.append(_shares_short(depth[f"{side}_ask_depth"]), style="bold")
+                    on_offer.append(" within 5¢", style="dim")
+            else:
+                on_offer.append("--", style="dim")
+            parts.append(on_offer)
         else:
             parts.append(Text("Waiting for the first window...", style="dim"))
 

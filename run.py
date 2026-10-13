@@ -40,6 +40,7 @@ OFFICIAL_PRICE_WAIT_SECONDS = 10
 RESOLUTION_CHECK_ATTEMPTS = 4
 RESOLUTION_CHECK_POLL_SECONDS = 15
 EARLY_VOLUME_PCT = 20
+VOLUME_POLL_SECONDS = 15
 
 
 def prepare_next_window(ws, coin, duration, next_start):
@@ -63,6 +64,13 @@ def load_early_volume(state, remaining):
     if info:
         state.volume_early_usd = info["volume_usd"]
         state.volume_early_time_left = remaining
+        state.volume_live = info["volume_usd"]
+
+
+def load_live_volume(state):
+    info = fetch_market(state.market_id)
+    if info:
+        state.volume_live = info["volume_usd"]
 
 
 def previous_window_prices(ws, coin, duration, window_start, timeout):
@@ -190,6 +198,7 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
     threading.Thread(target=decide_window, args=(ui, ws, sim, state, coin, duration, feed_id), daemon=True).start()
     next_prepared = False
     early_volume_asked = False
+    last_volume_poll = 0.0
 
     while True:
         now = time.time()
@@ -220,6 +229,9 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
         if not early_volume_asked and remaining <= (window_end - window_start) * (1 - EARLY_VOLUME_PCT / 100):
             early_volume_asked = True
             threading.Thread(target=load_early_volume, args=(state, remaining), daemon=True).start()
+        elif now - last_volume_poll >= VOLUME_POLL_SECONDS:
+            last_volume_poll = now
+            threading.Thread(target=load_live_volume, args=(state,), daemon=True).start()
 
         socket_info = {
             "connected": ws.connected,
