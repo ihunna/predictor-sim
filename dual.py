@@ -239,6 +239,7 @@ class WindowState:
     depth_start: dict | None = None
     depth_first_fill: dict | None = None
     depth_now: dict | None = None
+    book_now: dict | None = None
     volume_live: float | None = None
     depth_sums: dict = field(default_factory=dict)
     depth_samples: int = 0

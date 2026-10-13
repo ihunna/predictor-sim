@@ -188,6 +188,26 @@ def book_depth(book, within=0.05):
     return result
 
 
+def book_levels(book, n=6):
+    """Top ``n`` price levels of each side's book, Polymarket style: asks cheapest first, bids highest first.
+    Down's book is the Up book flipped (Down asks = 1 - Up bids, Down bids = 1 - Up asks)."""
+    def rows(raw):
+        out = []
+        for row in raw or []:
+            try:
+                out.append((float(row[0]), float(row[1])))
+            except (TypeError, ValueError, IndexError):
+                continue
+        return out
+
+    asks, bids = rows(book.get("asks")), rows(book.get("bids"))
+    flip = lambda levels: [(round(1.0 - p, 4), s) for p, s in levels]
+    return {
+        "up": {"asks": sorted(asks)[:n], "bids": sorted(bids, reverse=True)[:n]},
+        "down": {"asks": sorted(flip(bids))[:n], "bids": sorted(flip(asks), reverse=True)[:n]},
+    }
+
+
 def best_asks(book):
     """(up_ask, down_ask) from a YES/Up order book; 0.0 where a side is empty."""
     asks = book.get("asks") or []
@@ -297,6 +317,12 @@ class PredictWS:
         with self.lock:
             book = self.books.get(str(market_id))
         return book_depth(book) if book else None
+
+    def levels(self, market_id, n=6):
+        """``book_levels`` of the latest book for ``market_id``; None before the first book."""
+        with self.lock:
+            book = self.books.get(str(market_id))
+        return book_levels(book, n) if book else None
 
     def book_age(self, market_id):
         """Seconds since the last book for ``market_id``; None before the first."""

@@ -226,6 +226,7 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
         if state.depth_first_fill is None and state.fill_type != "none":
             state.depth_first_fill = ws.depth(market_id)
         state.record_book(ws.depth(market_id), up_ask, down_ask)
+        state.book_now = ws.levels(market_id)
         if not early_volume_asked and remaining <= (window_end - window_start) * (1 - EARLY_VOLUME_PCT / 100):
             early_volume_asked = True
             threading.Thread(target=load_early_volume, args=(state, remaining), daemon=True).start()

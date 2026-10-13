@@ -21,6 +21,8 @@ from logs import (
 
 HISTORY_ROWS = 12
 SIDEBAR_WIDTH = 44
+BOOK_GAP = 3
+BOOK_BAR_SHARE = 0.35
 EVENT_ROWS = 4
 
 
@@ -472,33 +474,6 @@ class Dashboard:
                     summary.append(" · if Down wins ")
                     summary.append(f"{if_down:+.2f}", style="bold green" if if_down >= 0 else "bold red")
                 parts.append(summary)
-
-            parts.append(Text(""))
-            parts.append(Text("Order book", style="bold"))
-            market = Text()
-            market.append("  Volume ", style="dim")
-            market.append(f"${state.volume_live:,.0f}" if state.volume_live is not None else "--", style="bold")
-            market.append(" traded so far", style="dim")
-            if up_ask > 0 and down_ask > 0:
-                market.append("    gap between buy and sell ", style="dim")
-                market.append(f"{max(0, round((up_ask + down_ask - 1) * 100))}¢", style="bold")
-            parts.append(market)
-            depth = state.depth_now
-            on_offer = Text()
-            on_offer.append("  For sale ", style="dim")
-            if depth:
-                for i, (label, color) in enumerate((("Up", "green"), ("Down", "red"))):
-                    side = label.lower()
-                    if i:
-                        on_offer.append("    ", style="dim")
-                    on_offer.append(f"{label} ", style=color)
-                    on_offer.append(_shares_short(depth[f"{side}_ask_size"]), style="bold")
-                    on_offer.append(" at price · ", style="dim")
-                    on_offer.append(_shares_short(depth[f"{side}_ask_depth"]), style="bold")
-                    on_offer.append(" within 5¢", style="dim")
-            else:
-                on_offer.append("--", style="dim")
-            parts.append(on_offer)
         else:
             parts.append(Text("Waiting for the first window...", style="dim"))
 
@@ -520,15 +495,88 @@ class Dashboard:
         main = Panel(Group(*parts), title=f"[bold]{header}[/bold]", subtitle=datetime.now().strftime("%H:%M:%S"),
                      border_style="cyan", padding=(0, 1))
 
+        book = self.render_book(state, up_ask, down_ask)
         wallet = self.render_wallet(state, up_ask, down_ask, history)
         past = self.render_history(history)
         if self.console.width < 120:
-            return Group(main, wallet, past)
+            return Group(main, book, wallet, past)
         layout = Table.grid(expand=True)
         layout.add_column(ratio=1)
         layout.add_column(width=SIDEBAR_WIDTH)
-        layout.add_row(main, Group(wallet, past))
+        layout.add_row(Group(main, book), Group(wallet, past))
         return layout
+
+    def render_book(self, state, up_ask, down_ask):
+        """Live order book for Up and Down side by side, Polymarket style: asks (red) above the spread, bids (blue)
+        below, Total = running dollars from the spread outward, shaded bar behind each row sized by that total."""
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+
+        header = Text()
+        header.append("Volume ", style="dim")
+        volume = state.volume_live if state is not None else None
+        header.append(f"${volume:,.0f}" if volume is not None else "--", style="bold")
+        header.append(" traded this window", style="dim")
+
+        levels = state.book_now if state is not None else None
+        if not levels:
+            body = Group(header, Text("No order book yet", style="dim"))
+            return Panel(body, title="[bold]Order book[/bold]", border_style="cyan", padding=(0, 1))
+
+        column = self.console.width - SIDEBAR_WIDTH if self.console.width >= 120 else self.console.width
+        width = max(30, (column - 4 - BOOK_GAP) // 2)
+        ask_rows = max(len(side["asks"]) for side in levels.values())
+
+        def line(price, shares, total, text_style="", bar=0, bar_style=""):
+            price_w = 8
+            total_w = 12
+            shares_w = width - price_w - total_w
+            body = f"{price:<{price_w}}{shares:>{shares_w - 4}}    {total:>{total_w}}"
+            text = Text(body[:width].ljust(width))
+            if text_style:
+                text.stylize(text_style, 0, price_w)
+            if bar:
+                text.stylize(bar_style, 0, min(width, bar))
+            return text
+
+        def money(value):
+            return f"${value:,.2f}" if value < 100 else f"${value:,.0f}"
+
+        def side_lines(label, color, book):
+            asks, bids = book["asks"], book["bids"]
+            ask_totals, bid_totals, running = [], [], 0.0
+            for price, size in asks:
+                running += price * size
+                ask_totals.append(running)
+            running = 0.0
+            for price, size in bids:
+                running += price * size
+                bid_totals.append(running)
+            biggest = max(ask_totals + bid_totals + [1.0])
+
+            lines = [Text(label, style=f"bold {color}"), line("Price", "Shares", "Total", "dim")]
+            lines[-1].stylize("dim")
+            lines.extend(Text(" " * width) for _ in range(ask_rows - len(asks)))
+            for (price, size), total in reversed(list(zip(asks, ask_totals))):
+                lines.append(line(f"{round(price * 100)}¢", f"{size:,.1f}", money(total), "bold #f0616d",
+                                  round(total / biggest * width * BOOK_BAR_SHARE), "on #3b1f26"))
+            if asks and bids:
+                middle = f"Spread: {round((asks[0][0] - bids[0][0]) * 100)}¢"
+            else:
+                middle = "one-sided"
+            lines.append(Text(middle.center(width), style="dim"))
+            for (price, size), total in zip(bids, bid_totals):
+                lines.append(line(f"{round(price * 100)}¢", f"{size:,.1f}", money(total), "bold #4c9aff",
+                                  round(total / biggest * width * BOOK_BAR_SHARE), "on #1b2b40"))
+            return Group(*lines)
+
+        sides = Table.grid(padding=(0, BOOK_GAP))
+        sides.add_column(width=width)
+        sides.add_column(width=width)
+        sides.add_row(side_lines("▲ Up", "green", levels["up"]), side_lines("▼ Down", "red", levels["down"]))
+        return Panel(Group(header, sides), title="[bold]Order book[/bold]", border_style="cyan", padding=(0, 1))
 
     def render_history(self, history):
         """Sidebar: finished windows, newest first, plus totals."""
