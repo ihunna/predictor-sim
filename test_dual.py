@@ -282,18 +282,12 @@ def test_open_and_end_asks(tmp):
     assert row["preopen_up_ask"] == 56 and row["preopen_down_ask"] == 45
     assert row["open_up_ask"] == 55 and row["open_down_ask"] == 47 and row["open_time_left"] == 299
     assert row["up_ask_10s_left"] == 80 and row["down_ask_10s_left"] == 21
-
-
-def test_open_and_end_asks(tmp):
-    sim = new_sim(tmp)
-    state = sim.start_window(START, END, "s", "1", now=START)
-    state.preopen_asks = (0.56, 0.45)
-    for off, u, d in [(0, 0.0, 0.5), (1, 0.55, 0.47), (100, 0.40, 0.61), (291, 0.80, 0.21), (295, 0.90, 0.11)]:
-        sim.on_tick(START + off, u, d)
+    # decided window: Down's book is empty with 10s left, Up's price is still logged
+    sim.start_window(START + 300, END + 300, "s", "2", now=START + 300)
+    for off, u, d in [(0, 0.5, 0.51), (292, 0.97, 0.0)]:
+        sim.on_tick(START + 300 + off, u, d)
     row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
-    assert row["preopen_up_ask"] == 56 and row["preopen_down_ask"] == 45
-    assert row["open_up_ask"] == 55 and row["open_down_ask"] == 47 and row["open_time_left"] == 299
-    assert row["up_ask_10s_left"] == 80 and row["down_ask_10s_left"] == 21
+    assert row["up_ask_10s_left"] == 97 and row["down_ask_10s_left"] == ""
 
 
 def test_tie(tmp):

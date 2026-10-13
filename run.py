@@ -192,7 +192,6 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
     state = sim.start_window(window_start, window_end, slug, market_id, skip_reason=skip_reason,
                              decision_pending=skip_reason is None)
     state.preopen_asks = preopen_asks.pop(window_start, None)
-    state.preopen_asks = preopen_asks.pop(window_start, None)
     threading.Thread(target=load_fees, args=(state,), daemon=True).start()
     if skip_reason == "no_ptb":
         skip_message = "No Price to Beat given: logging this window without trading."
@@ -205,7 +204,6 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
     next_prepared = False
     early_volume_asked = False
     last_volume_poll = 0.0
-    preopen_sampled = False
     preopen_sampled = False
 
     while True:

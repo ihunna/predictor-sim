@@ -449,11 +449,10 @@ class DualSim:
             watch.update(remaining, up_ask, up_bid)
         for watch in state.cheap_down.values():
             watch.update(remaining, down_ask, down_bid)
-        if up_ask > 0 and down_ask > 0:
-            if state.open_asks is None:
-                state.open_asks, state.open_time_left = (up_ask, down_ask), remaining
-            if state.asks_end is None and remaining <= END_SAMPLE_SECONDS:
-                state.asks_end = (up_ask, down_ask)
+        if up_ask > 0 and down_ask > 0 and state.open_asks is None:
+            state.open_asks, state.open_time_left = (up_ask, down_ask), remaining
+        if (up_ask > 0 or down_ask > 0) and state.asks_end is None and remaining <= END_SAMPLE_SECONDS:
+            state.asks_end = (up_ask, down_ask)  # a side's ask is 0 when its book is empty (window decided)
 
         if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
                 or state.stop_time_left is not None):
