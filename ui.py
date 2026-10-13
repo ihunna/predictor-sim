@@ -437,7 +437,8 @@ class Dashboard:
                 if state.would_stop and state.would_stop[0] == label:
                     side_, n_, bid_, left_ = state.would_stop
                     order_lines.append(Text(
-                        f"stop-loss would sell {n_} @ {round(bid_ * 100)}¢ at {clock(left_)} (paused, logged)",
+                        f"stop-loss would sell {n_} @ {round(bid_ * 100)}¢ at {clock(left_)} "
+                        + (f"(under {sim.stop_loss_min_cents}¢, kept)" if sim.stop_loss_live else "(paused, logged)"),
                         style="dim"))
                 filled_left = state.first_fill_time_left(label)
                 cheapest = Text()

@@ -20,9 +20,11 @@ def run_window(sim, ticks, start=START, end=END):
     return sim.finish_window()
 
 
-def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=True):
+def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=True,
+            stop_loss_min_cents=0):
     return DualSim("btc", 5, 30, 8, place_at, os.path.join(tmp, "trades.csv"), capital, "default",
-                   hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds, stop_loss_live=stop_loss_live)
+                   hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds, stop_loss_live=stop_loss_live,
+                   stop_loss_min_cents=stop_loss_min_cents)
 
 
 def test_both_fill_and_lowest_times(tmp):
@@ -231,6 +233,42 @@ def test_stop_loss_logged_only(tmp):
     assert sim.would_stop_saved(state, "Up") == round(1.20 - 8, 4)
 
 
+def test_stop_loss_minimum_price(tmp):
+    # live stop with a 3¢ minimum: Up's bid is 2¢ with 20s left, so the contracts are kept and only logged
+    sim = new_sim(tmp, stop_loss_seconds=20, stop_loss_min_cents=3)
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (280, 0.02, 0.98)])
+    assert state.stop_side is None and state.held("Up") == 8
+    assert state.would_stop == ("Up", 8, 0.02, 20)
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert row["stop_side"] == "" and row["would_stop_side"] == "Up"
+    assert "stop_skipped_below_3c_up_8@2_at_00:20_left" in row["notes"]
+    # at 15¢ it sells as before
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (280, 0.16, 0.85)])
+    assert state.stop_side == "Up" and state.stop_contracts == 8 and state.would_stop is None
+
+
+def test_stop_checkpoints(tmp):
+    # Up fills at 30¢; losing at 60s and 50s left; Down then fills at 30¢ (dual) so later checks don't fire
+    sim = new_sim(tmp)
+    ticks = [(0, 0.50, 0.51), (60, 0.30, 0.71), (240, 0.20, 0.81), (250, 0.25, 0.76), (260, 0.72, 0.29),
+             (270, 0.80, 0.21), (280, 0.85, 0.16)]
+    state = run_window(sim, ticks)
+    assert state.stop_checks[60][:3] == ("Up", 8, 0.19) and state.stop_checks[50][:3] == ("Up", 8, 0.24)
+    assert 40 not in state.stop_checks and 30 not in state.stop_checks and 20 not in state.stop_checks
+    row = sim.settle(state, "Down", 1, 2, None)
+    # stopping at 60s: sell 8 Up @19¢ and cancel Down → 1.52 - 2.40 = -0.88; holding the dual: +3.20
+    assert row["stop_60s_side"] == "Up" and row["stop_60s_price_cents"] == 19
+    assert row["stop_60s_saved"] == "-4.0800", row["stop_60s_saved"]
+    assert row["stop_50s_saved"] == "-3.6800" and row["stop_40s_side"] == ""
+    # one-sided loser with the live 20s stop: checkpoints are measured against holding, not the live sale
+    sim = new_sim(tmp, stop_loss_seconds=20)
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.30, 0.71), (270, 0.10, 0.91), (280, 0.06, 0.95)])
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert row["stop_30s_price_cents"] == 9 and row["stop_30s_saved"] == "+0.7200"
+    assert row["stop_20s_price_cents"] == 5 and row["stop_20s_saved"] == "+0.4000"
+    assert row["stop_side"] == "Up" and row["pnl"] == "-2.0000"
+
+
 def test_cheap_side_bounces(tmp):
     sim = new_sim(tmp)
     # Up drops to 5¢ at 200s left, its bid (1 - Down ask) bounces to 11¢, 7¢, 12¢, 13¢, then dies
@@ -256,6 +294,21 @@ def test_cheap_side_bounces(tmp):
     for off, u, d in ticks:
         sim.on_tick(START + off, u, d)
     assert sim.finish_window().cheap_up[5].bounces == 2
+
+
+def test_rise_then_fall(tmp):
+    sim = new_sim(tmp)
+    # Up's bid (1 - Down ask) rises to 66¢ at 200s left, dips to 52¢ at 150s, recovers to 80¢, ends 70¢
+    ticks = [(0, 0.52, 0.50), (50, 0.60, 0.42), (100, 0.67, 0.34), (150, 0.50, 0.48), (200, 0.82, 0.20), (290, 0.72, 0.30)]
+    state = run_window(sim, ticks)
+    r60, r65, r75 = state.rise_up[60], state.rise_up[65], state.rise_up[75]
+    assert r60.touch_time_left == 200 and r60.min_bid == 0.52 and r60.min_bid_time_left == 150
+    assert r65.touch_time_left == 200 and r65.min_bid == 0.52
+    assert r75.touch_time_left == 100 and r75.min_bid == 0.70 and r75.min_bid_time_left == 10
+    assert state.rise_down[60].touch_time_left is None
+    row = sim.settle(state, "Up", 1, 2, None)
+    assert row["up_rise_60c_time_left"] == 200 and row["up_min_bid_after_60c"] == 52
+    assert row["up_min_bid_after_75c"] == 70 and row["down_rise_60c_time_left"] == ""
 
 
 def test_book_averages(tmp):
@@ -362,7 +415,10 @@ def main():
             test_hedge_split,
             test_stop_loss,
             test_stop_loss_logged_only,
+            test_stop_loss_minimum_price,
+            test_stop_checkpoints,
             test_cheap_side_bounces,
+            test_rise_then_fall,
             test_book_averages,
             test_open_and_end_asks,
             test_tie,

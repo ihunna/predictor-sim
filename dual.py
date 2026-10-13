@@ -16,6 +16,8 @@ from datetime import datetime
 from logs import format_time
 
 CHEAP_LEVELS = (40, 30, 20, 15, 10, 5)
+RISE_LEVELS = (60, 65, 70, 75)
+STOP_CHECK_SECONDS = (60, 50, 40, 30, 20)
 END_SAMPLE_SECONDS = 10
 
 TRADES_HEADER = [
@@ -65,6 +67,16 @@ TRADES_HEADER = [
     "would_stop_saved",
     *[
         name
+        for seconds in STOP_CHECK_SECONDS
+        for name in (
+            f"stop_{seconds}s_side",
+            f"stop_{seconds}s_contracts",
+            f"stop_{seconds}s_price_cents",
+            f"stop_{seconds}s_saved",
+        )
+    ],
+    *[
+        name
         for side in ("up", "down")
         for level in CHEAP_LEVELS
         for name in (
@@ -72,6 +84,16 @@ TRADES_HEADER = [
             f"{side}_max_bid_after_{level}c",
             f"{side}_max_bid_after_{level}c_time_left",
             f"{side}_bounces_{2 * level + 1}c_after_{level}c",
+        )
+    ],
+    *[
+        name
+        for side in ("up", "down")
+        for level in RISE_LEVELS
+        for name in (
+            f"{side}_rise_{level}c_time_left",
+            f"{side}_min_bid_after_{level}c",
+            f"{side}_min_bid_after_{level}c_time_left",
         )
     ],
     "volume_usd",
@@ -138,6 +160,29 @@ def cheap_watches():
     return {level: CheapWatch(level) for level in CHEAP_LEVELS}
 
 
+@dataclass
+class RiseWatch:
+    """After a side's bid (1 - the other side's ask) first reaches `level` cents: its lowest bid since, and when."""
+    level: int
+    touch_time_left: float | None = None
+    min_bid: float = float("inf")
+    min_bid_time_left: float | None = None
+
+    def update(self, remaining, bid):
+        if bid <= 0:
+            return
+        if self.touch_time_left is None:
+            if bid >= self.level / 100 - 1e-9:
+                self.touch_time_left = remaining
+            return
+        if bid < self.min_bid:
+            self.min_bid, self.min_bid_time_left = bid, remaining
+
+
+def rise_watches():
+    return {level: RiseWatch(level) for level in RISE_LEVELS}
+
+
 def last_capital_after(path, default):
     """Starting balance on restart: the last capital_after in the trades log, else default. Returns (amount, source)."""
     if not path or not os.path.isfile(path):
@@ -180,6 +225,15 @@ def _cheap_columns(side, watches):
         columns[f"{side}_max_bid_after_{level}c"] = _cents(watch.max_bid) if touched else ""
         columns[f"{side}_max_bid_after_{level}c_time_left"] = _secs(watch.max_bid_time_left)
         columns[f"{side}_bounces_{watch.bounce_cents}c_after_{level}c"] = watch.bounces if touched else ""
+    return columns
+
+
+def _rise_columns(side, watches):
+    columns = {}
+    for level, watch in watches.items():
+        columns[f"{side}_rise_{level}c_time_left"] = _secs(watch.touch_time_left)
+        columns[f"{side}_min_bid_after_{level}c"] = _cents(watch.min_bid) if watch.touch_time_left is not None else ""
+        columns[f"{side}_min_bid_after_{level}c_time_left"] = _secs(watch.min_bid_time_left)
     return columns
 
 
@@ -242,12 +296,17 @@ class WindowState:
     stop_price: float = 0.0
     stop_time_left: float | None = None
     would_stop: tuple | None = None  # (side, contracts, bid, time_left) when the stop-loss is only logged
+    # seconds -> (side, contracts, bid, orders filled by then): the stop-loss rule checked at each STOP_CHECK_SECONDS
+    stop_checks: dict = field(default_factory=dict)
+    stop_checks_done: set = field(default_factory=set)
     open_asks: tuple | None = None  # (up, down) at the first tick with both asks
     open_time_left: float | None = None
     preopen_asks: tuple | None = None  # (up, down) of this market sampled shortly before it opened
     asks_end: tuple | None = None  # (up, down) at the first tick with END_SAMPLE_SECONDS or less left
     cheap_up: dict = field(default_factory=cheap_watches)
     cheap_down: dict = field(default_factory=cheap_watches)
+    rise_up: dict = field(default_factory=rise_watches)
+    rise_down: dict = field(default_factory=rise_watches)
     depth_start: dict | None = None
     depth_first_fill: dict | None = None
     depth_now: dict | None = None
@@ -350,10 +409,12 @@ class WindowState:
 
 class DualSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
-                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False):
+                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
+                 stop_loss_min_cents=0):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
+        self.stop_loss_min_cents = stop_loss_min_cents
         self.cancel_left_pct = cancel_left_pct
         self.hedge_cents = hedge_cents
         self.hedge = hedge_cents / 100.0
@@ -387,6 +448,8 @@ class DualSim:
             stop = "no stop-loss"
         elif self.stop_loss_live:
             stop = f"stop-loss at {format_time(self.stop_loss_seconds)} left"
+            if self.stop_loss_min_cents > 0:
+                stop += f" (only if it sells for {self.stop_loss_min_cents}¢+)"
         else:
             stop = f"stop-loss paused (logging what it would sell at {format_time(self.stop_loss_seconds)} left)"
         return (
@@ -449,6 +512,10 @@ class DualSim:
             watch.update(remaining, up_ask, up_bid)
         for watch in state.cheap_down.values():
             watch.update(remaining, down_ask, down_bid)
+        for watch in state.rise_up.values():
+            watch.update(remaining, up_bid)
+        for watch in state.rise_down.values():
+            watch.update(remaining, down_bid)
         if up_ask > 0 and down_ask > 0 and state.open_asks is None:
             state.open_asks, state.open_time_left = (up_ask, down_ask), remaining
         if (up_ask > 0 or down_ask > 0) and state.asks_end is None and remaining <= END_SAMPLE_SECONDS:
@@ -483,7 +550,50 @@ class DualSim:
             order.check(remaining, asks[order.side])
         self._track_other_side(state, remaining, asks)
         self._maybe_hedge(state, remaining, asks)
+        self._check_stop_points(state, remaining, asks)
         self._maybe_stop(state, remaining, asks)
+
+    def _check_stop_points(self, state, remaining, asks):
+        """Logs what the stop-loss rule would sell at each STOP_CHECK_SECONDS mark (no trading)."""
+        for seconds in STOP_CHECK_SECONDS:
+            if seconds in state.stop_checks_done or remaining > seconds:
+                continue
+            if asks["Up"] <= 0 or asks["Down"] <= 0 or asks["Up"] == asks["Down"]:
+                continue
+            state.stop_checks_done.add(seconds)
+            if state.fill_type == "none":
+                continue
+            leader = "Up" if asks["Up"] > asks["Down"] else "Down"
+            loser = "Down" if leader == "Up" else "Up"
+            _, projected = self.compute_result(state, leader, state.maker_fee_bps, state.taker_fee_bps)
+            excess = state.held(loser) - state.held(leader)
+            bid = round(1.0 - asks[leader], 4)
+            if projected is not None and projected < 0 and excess > 0 and bid > 0:
+                filled = tuple(o for o in state.orders if o.filled)
+                state.stop_checks[seconds] = (loser, excess, bid, filled)
+
+    @staticmethod
+    def _pnl_of(filled, outcome, maker_fee_bps, taker_fee_bps, sold_side=None, sold=0, bid=0.0):
+        cost = sum(o.fill_price * o.contracts for o in filled)
+        fee = sum(o.fill_price * o.contracts * (taker_fee_bps if o.taker else maker_fee_bps) / 10000.0
+                  for o in filled)
+        payout = bid * sold
+        fee += bid * sold * taker_fee_bps / 10000.0
+        for s in ("Up", "Down"):
+            held = sum(o.contracts for o in filled if o.side == s) - (sold if s == sold_side else 0)
+            payout += held if outcome == s else 0.5 * held if outcome == "Tie" else 0.0
+        return payout - cost - fee
+
+    def stop_check_saved(self, state, seconds, outcome, maker_fee_bps=0, taker_fee_bps=0):
+        """Pnl had the stop-loss sold at ``seconds`` left (later fills cancelled) minus the pnl of holding
+        everything that actually filled with no stop-loss."""
+        check = state.stop_checks.get(seconds)
+        if not check or outcome not in ("Up", "Down", "Tie"):
+            return None
+        side, n, bid, filled = check
+        stopped = self._pnl_of(filled, outcome, maker_fee_bps, taker_fee_bps, side, n, bid)
+        held = self._pnl_of([o for o in state.orders if o.filled], outcome, maker_fee_bps, taker_fee_bps)
+        return round(stopped - held, 4)
 
     def _maybe_stop(self, state, remaining, asks):
         """Once, at ``stop_loss_seconds`` left: if the window would lose with the side now leading as the winner,
@@ -501,6 +611,11 @@ class DualSim:
         excess = state.held(loser) - state.held(leader)
         bid = round(1.0 - asks[leader], 4)
         if projected >= 0 or excess <= 0 or bid <= 0:
+            return
+        if self.stop_loss_live and bid < self.stop_loss_min_cents / 100 - 1e-9:
+            state.would_stop = (loser, excess, bid, remaining)
+            state.notes.append(f"stop_skipped_below_{self.stop_loss_min_cents}c_{loser.lower()}_{excess}@"
+                               f"{round(bid * 100)}_at_{format_time(remaining)}_left")
             return
         if not self.stop_loss_live:
             state.would_stop = (loser, excess, bid, remaining)
@@ -565,6 +680,17 @@ class DualSim:
         proceeds = bid * n * (1 - taker_fee_bps / 10000.0)
         paid = n if outcome == side else 0.5 * n if outcome == "Tie" else 0.0
         return round(proceeds - paid, 4)
+
+    def _stop_check_columns(self, state, outcome, maker_fee_bps, taker_fee_bps):
+        columns = {}
+        for seconds in STOP_CHECK_SECONDS:
+            check = state.stop_checks.get(seconds)
+            saved = self.stop_check_saved(state, seconds, outcome, maker_fee_bps, taker_fee_bps)
+            columns[f"stop_{seconds}s_side"] = check[0] if check else ""
+            columns[f"stop_{seconds}s_contracts"] = check[1] if check else ""
+            columns[f"stop_{seconds}s_price_cents"] = _cents(check[2]) if check else ""
+            columns[f"stop_{seconds}s_saved"] = f"{saved:+.4f}" if saved is not None else ""
+        return columns
 
     def finish_window(self):
         state, self.current = self.current, None
@@ -658,8 +784,11 @@ class DualSim:
                 "would_stop_price_cents": _cents(state.would_stop[2]) if state.would_stop else "",
                 "would_stop_time_left": _secs(state.would_stop[3]) if state.would_stop else "",
                 "would_stop_saved": f"{saved:+.4f}" if saved is not None else "",
+                **self._stop_check_columns(state, outcome, maker_fee_bps, taker_fee_bps),
                 **_cheap_columns("up", state.cheap_up),
                 **_cheap_columns("down", state.cheap_down),
+                **_rise_columns("up", state.rise_up),
+                **_rise_columns("down", state.rise_down),
                 "volume_usd": f"{state.volume_usd:.2f}" if state.volume_usd is not None else "",
                 "volume_usd_early": f"{state.volume_early_usd:.2f}" if state.volume_early_usd is not None else "",
                 "volume_early_time_left": _secs(state.volume_early_time_left),
