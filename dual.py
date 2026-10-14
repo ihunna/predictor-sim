@@ -469,8 +469,10 @@ class DualSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, strategy="dual", fav_max_cents=55,
-                 dual_lookback=3, against_min_streak=3, against_min_move_pct=0.02, against_max_cents=99):
+                 dual_lookback=3, against_min_streak=3, against_min_move_pct=0.02, against_max_cents=99,
+                 fav_max_move_pct=0.02):
         self.strategy = strategy
+        self.fav_max_move_pct = fav_max_move_pct
         self.against_min_streak = against_min_streak
         self.against_min_move_pct = against_min_move_pct
         self.against_max_cents = against_max_cents
@@ -523,7 +525,7 @@ class DualSim:
         if self.strategy == "combo":
             return (
                 f"🎯 Favourite + against: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
-                f"(≤{self.fav_max_cents}¢); after {self.against_min_streak}+ in a row, when the last window moved "
+                f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}); after {self.against_min_streak}+ in a row, when the last window moved "
                 f"{self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
                 f"(≤{self.against_max_cents}¢); held to the end; else skip | capital ${self.capital:.2f} "
                 f"({self.capital_source})"
@@ -538,13 +540,13 @@ class DualSim:
         if self.strategy == "fav":
             return (
                 f"🎯 Favourite only: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
-                f"(≤{self.fav_max_cents}¢, held to the end); else skip | capital ${self.capital:.2f} "
+                f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}, held to the end); else skip | capital ${self.capital:.2f} "
                 f"({self.capital_source})"
             )
         if self.strategy == "regime":
             return (
                 f"🎯 Regime: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
-                f"(≤{self.fav_max_cents}¢, held to the end); else a {self.limit_cents}¢ dual × {self.contracts} "
+                f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}, held to the end); else a {self.limit_cents}¢ dual × {self.contracts} "
                 f"if one of the last {self.dual_lookback} windows was a dual; else skip | dual windows: {hedge}, "
                 f"{cancel}, {stop} | capital ${self.capital:.2f} ({self.capital_source})"
             )
@@ -552,6 +554,11 @@ class DualSim:
             f"🎯 Dual: {self.limit_cents}¢ limit on Up and Down, {self.contracts} contracts each, placed {when}, "
             f"{hedge}, {cancel}, {stop}, {skip} | capital ${self.capital:.2f} ({self.capital_source})"
         )
+
+    def _fav_skip_text(self):
+        if self.fav_max_move_pct <= 0:
+            return ""
+        return f", only when the last window moved under {self.fav_max_move_pct:.2f}%"
 
     def load_history(self, path):
         """Fills the window history (winner, dual or not) from an existing trades log."""
@@ -588,6 +595,17 @@ class DualSim:
             count, start = count + 1, start - step
         return count, last[0]
 
+    def _fav_unless_move(self, streak, prev_move_pct):
+        """The favourite bet, only when the last window moved less than ``fav_max_move_pct``% (0 = any move)."""
+        reason = f"streak_2_{streak[1].lower()}"
+        if self.fav_max_move_pct <= 0:
+            return "fav", reason
+        if prev_move_pct is None:
+            return "skip", f"{reason}_prev_move_unknown"
+        if abs(prev_move_pct) >= self.fav_max_move_pct:
+            return "skip", f"{reason}_move_{prev_move_pct:+.3f}pct"
+        return "fav", reason
+
     def regime_decision(self, window_start, prev_outcome=None, prev_move_pct=None):
         """("dual" | "fav" | "against" | "skip", reason) from the recent windows, and logs the inputs on the current
         state: exactly 2 same winners in a row -> buy the favourite; else dual if one of the last ``dual_lookback``
@@ -606,7 +624,7 @@ class DualSim:
         if streak is None:
             return "skip", "streak_unknown"
         if self.strategy == "combo" and streak[0] == 2:
-            return "fav", f"streak_2_{streak[1].lower()}"
+            return self._fav_unless_move(streak, prev_move_pct)
         if self.strategy in ("against", "combo"):
             n, side = streak
             if side == "Tie" or n < self.against_min_streak:
@@ -619,7 +637,7 @@ class DualSim:
                 state.bet_side = "Down" if side == "Up" else "Up"
             return "against", f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
         if streak[0] == 2:
-            return "fav", f"streak_2_{streak[1].lower()}"
+            return self._fav_unless_move(streak, prev_move_pct)
         if self.strategy == "fav":
             return "skip", f"streak_{streak[0]}_{streak[1].lower()}"
         if any(known):

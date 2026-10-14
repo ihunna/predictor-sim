@@ -318,6 +318,9 @@ def parse_args():
                         help="Against: bet only when the last window moved this many percent or more (default 0.02).")
     parser.add_argument("--against-max", type=int, default=99, metavar="CENTS",
                         help="Against: only buy at this ask or below (default 99 = no cap).")
+    parser.add_argument("--fav-max-move", type=float, default=0.02, metavar="PCT",
+                        help="Only take the favourite bet when the last window moved less than this many percent "
+                             "(default 0.02; 0 = any move).")
     parser.add_argument("--fav-max", type=int, default=55, metavar="CENTS",
                         help="Regime: only buy the favourite at this ask or below (default 55).")
     parser.add_argument("--dual-lookback", type=int, default=3, metavar="WINDOWS",
@@ -404,7 +407,8 @@ def main():
                   reload_to=args.capital if args.reload_to is None else args.reload_to,
                   reloaded_total=last_reloaded_total(trades_file), strategy=strategy, fav_max_cents=args.fav_max,
                   dual_lookback=args.dual_lookback, against_min_streak=args.against_min_streak,
-                  against_min_move_pct=args.against_min_move, against_max_cents=args.against_max)
+                  against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
+                  fav_max_move_pct=args.fav_max_move)
     if trades_file != dual_trades_file:
         sim.load_history(dual_trades_file)
     sim.load_history(trades_file)

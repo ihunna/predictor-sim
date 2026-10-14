@@ -444,6 +444,7 @@ def test_book_and_slugs():
 def regime_sim(tmp, **kwargs):
     sim = new_sim(tmp, **kwargs)
     sim.strategy = "regime"
+    sim.fav_max_move_pct = 0
     return sim
 
 
@@ -520,6 +521,12 @@ def test_combo_strategy(tmp):
     sim = new_sim(tmp)
     sim.strategy = "combo"
     sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
+    assert sim.regime_decision(START, None, 0.01) == ("fav", "streak_2_up")
+    assert sim.regime_decision(START, None, -0.019) == ("fav", "streak_2_up")
+    assert sim.regime_decision(START, None, -0.03) == ("skip", "streak_2_up_move_-0.030pct")
+    assert sim.regime_decision(START, None, 0.08) == ("skip", "streak_2_up_move_+0.080pct")
+    assert sim.regime_decision(START, None, None) == ("skip", "streak_2_up_prev_move_unknown")
+    sim.fav_max_move_pct = 0
     assert sim.regime_decision(START, None, 0.08) == ("fav", "streak_2_up")
     sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
                    START - 1200: ["Down", True]}
