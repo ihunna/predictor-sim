@@ -3,7 +3,8 @@
 With the "regime" strategy each window is instead decided from the recent ones (``regime_decision``): exactly 2
 same winners in a row -> buy the favourite (the side with the higher ask) at its ask and hold; else the dual if one
 of the last few windows was a dual (both sides reached the limit); else skip. The "fav" strategy only takes the
-favourite bets and never places a dual.
+favourite bets and never places a dual. The "against" strategy only buys the side against a streak of 3+ when the
+last window moved enough, and "combo" runs both of those rules.
 
 An order fills when its side's ask reaches its price or lower. If the ask is already at or below the price when
 the order goes in, it fills at once at the ask (a taker fill); otherwise it fills at its price (maker).
@@ -372,7 +373,8 @@ class WindowState:
     volume_early_time_left: float | None = None
     trading: bool = True
     decision_pending: bool = False
-    mode: str = "dual"  # "dual" (both limits) or "fav" (buy the favourite at its ask and hold)
+    mode: str = "dual"  # "dual" (both limits), "fav" (buy the favourite at its ask) or "against" (buy bet_side)
+    bet_side: str | None = None  # side bought in "against" mode
     action: str = ""  # strategy decision: dual, fav or skip
     action_reason: str = ""
     streak_before: str = ""  # e.g. "2 Up": same winner in a row up to the last window
@@ -467,8 +469,11 @@ class DualSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, strategy="dual", fav_max_cents=55,
-                 dual_lookback=3):
+                 dual_lookback=3, against_min_streak=3, against_min_move_pct=0.02, against_max_cents=99):
         self.strategy = strategy
+        self.against_min_streak = against_min_streak
+        self.against_min_move_pct = against_min_move_pct
+        self.against_max_cents = against_max_cents
         self.fav_max_cents = fav_max_cents
         self.dual_lookback = dual_lookback
         self.history = {}  # window_start -> [outcome or None, dual (both sides reached the limit) or None]
@@ -515,6 +520,21 @@ class DualSim:
                 stop += f" (only if it sells for {self.stop_loss_min_cents}¢+)"
         else:
             stop = f"stop-loss paused (logging what it would sell at {format_time(self.stop_loss_seconds)} left)"
+        if self.strategy == "combo":
+            return (
+                f"🎯 Favourite + against: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
+                f"(≤{self.fav_max_cents}¢); after {self.against_min_streak}+ in a row, when the last window moved "
+                f"{self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
+                f"(≤{self.against_max_cents}¢); held to the end; else skip | capital ${self.capital:.2f} "
+                f"({self.capital_source})"
+            )
+        if self.strategy == "against":
+            return (
+                f"🎯 Against the streak: after {self.against_min_streak}+ same winners in a row, when the last window "
+                f"moved {self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
+                f"(≤{self.against_max_cents}¢, held to the end); else skip | capital ${self.capital:.2f} "
+                f"({self.capital_source})"
+            )
         if self.strategy == "fav":
             return (
                 f"🎯 Favourite only: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
@@ -568,10 +588,11 @@ class DualSim:
             count, start = count + 1, start - step
         return count, last[0]
 
-    def regime_decision(self, window_start, prev_outcome=None):
-        """("dual" | "fav" | "skip", reason) from the recent windows, and logs the inputs on the current state:
-        exactly 2 same winners in a row -> buy the favourite; else dual if one of the last ``dual_lookback`` windows
-        was a dual; else skip (BTC is trending)."""
+    def regime_decision(self, window_start, prev_outcome=None, prev_move_pct=None):
+        """("dual" | "fav" | "against" | "skip", reason) from the recent windows, and logs the inputs on the current
+        state: exactly 2 same winners in a row -> buy the favourite; else dual if one of the last ``dual_lookback``
+        windows was a dual; else skip (BTC is trending). The "against" strategy only buys the side against a streak
+        of ``against_min_streak``+ when the last window moved ``against_min_move_pct``% or more."""
         step = self.duration * 60
         if prev_outcome in ("Up", "Down", "Tie"):
             self.history.setdefault(window_start - step, [None, None])[0] = prev_outcome
@@ -584,6 +605,19 @@ class DualSim:
             state.recent_duals = f"{sum(known)}/{len(duals)}" + ("" if len(known) == len(duals) else "?")
         if streak is None:
             return "skip", "streak_unknown"
+        if self.strategy == "combo" and streak[0] == 2:
+            return "fav", f"streak_2_{streak[1].lower()}"
+        if self.strategy in ("against", "combo"):
+            n, side = streak
+            if side == "Tie" or n < self.against_min_streak:
+                return "skip", f"streak_{n}_{side.lower()}"
+            if prev_move_pct is None:
+                return "skip", "prev_move_unknown"
+            if abs(prev_move_pct) < self.against_min_move_pct:
+                return "skip", f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
+            if state is not None and state.window_start == window_start:
+                state.bet_side = "Down" if side == "Up" else "Up"
+            return "against", f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
         if streak[0] == 2:
             return "fav", f"streak_2_{streak[1].lower()}"
         if self.strategy == "fav":
@@ -700,6 +734,15 @@ class DualSim:
                     state.notes.append("not_traded")
                     return
                 orders = [Order(side, "main", price, self.contracts, remaining)]
+            elif state.mode == "against":
+                side = state.bet_side
+                price = up_ask if side == "Up" else down_ask
+                if price > self.against_max_cents / 100 + 1e-9:
+                    state.trading = False
+                    state.notes.append(f"against_{side.lower()}_{round(price * 100)}c_over_{self.against_max_cents}c")
+                    state.notes.append("not_traded")
+                    return
+                orders = [Order(side, "main", price, self.contracts, remaining)]
             else:
                 if self.place_at is not None and remaining > self.place_at:
                     return
@@ -765,7 +808,7 @@ class DualSim:
     def _maybe_stop(self, state, remaining, asks):
         """Once, at ``stop_loss_seconds`` left: if the window would lose with the side now leading as the winner,
         sell the losing side's unmatched contracts at its bid (1 - the leading side's ask) and cancel open orders."""
-        if (self.stop_loss_seconds <= 0 or state.mode == "fav" or state.stop_checked
+        if (self.stop_loss_seconds <= 0 or state.mode != "dual" or state.stop_checked
                 or remaining > self.stop_loss_seconds):
             return
         if asks["Up"] <= 0 or asks["Down"] <= 0 or asks["Up"] == asks["Down"]:
@@ -809,7 +852,7 @@ class DualSim:
 
     def _maybe_hedge(self, state, remaining, asks):
         """First fill on one side only: split the other side's main order into lock-in + profit orders."""
-        if (self.hedge_cents <= 0 or state.mode == "fav" or state.hedge_time_left is not None
+        if (self.hedge_cents <= 0 or state.mode != "dual" or state.hedge_time_left is not None
                 or self.hedge <= self.limit):
             return
         mains = {o.side: o for o in state.orders if o.kind == "main"}
@@ -833,7 +876,7 @@ class DualSim:
 
     def resolve_decision(self, state, skip_reason=None, mode="dual"):
         """Releases held orders, or turns the window into a logged-only one when ``skip_reason`` is given.
-        ``mode`` "fav" buys the favourite instead of placing the dual."""
+        ``mode`` "fav" buys the favourite and "against" buys ``state.bet_side`` instead of placing the dual."""
         state.mode = mode
         if skip_reason and state.trading:
             state.trading = False
@@ -1029,9 +1072,10 @@ class DualSim:
             orders = "checking last window"
         elif state.placed_time_left is None:
             orders = "waiting to place"
-        elif state.mode == "fav":
-            orders = " ".join(f"favourite {o.side} {o.contracts} @ {round(o.fill_price * 100)}¢"
-                              for o in state.orders if o.filled) or "favourite not filled"
+        elif state.mode != "dual":
+            label = "favourite" if state.mode == "fav" else "against"
+            orders = " ".join(f"{label} {o.side} {o.contracts} @ {round(o.fill_price * 100)}¢"
+                              for o in state.orders if o.filled) or f"{label} not filled"
         else:
             up = "✅" if state.up_fill_time_left is not None else "⏳"
             down = "✅" if state.down_fill_time_left is not None else "⏳"

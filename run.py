@@ -106,7 +106,7 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     if not state.decision_pending:
         ui.prev_move_known(state, prev_move, None)
         return
-    if sim.strategy in ("regime", "fav"):
+    if sim.strategy in ("regime", "fav", "against", "combo"):
         decide_regime(ui, sim, state, prev_move)
         return
     reason = sim.prev_move_skip_reason(prev_move)
@@ -125,15 +125,23 @@ def decide_regime(ui, sim, state, prev_move):
     prev_outcome = None
     if state.prev_move is not None and prev_move is not None:
         prev_outcome = "Up" if state.prev_move > 0 else "Down" if state.prev_move < 0 else "Tie"
-    action, reason = sim.regime_decision(state.window_start, prev_outcome)
+    action, reason = sim.regime_decision(state.window_start, prev_outcome, prev_move)
     state.action, state.action_reason = action, reason
     if not state.trading:
         sim.resolve_decision(state)
         ui.prev_move_known(state, prev_move, None)
         return
-    sim.resolve_decision(state, reason if action == "skip" else None, mode="fav" if action == "fav" else "dual")
-    streak = f"streak {state.streak_before}, duals in last {sim.dual_lookback}: {state.recent_duals}"
-    if action == "fav":
+    sim.resolve_decision(state, reason if action == "skip" else None,
+                         mode=action if action in ("fav", "against") else "dual")
+    if sim.strategy in ("against", "combo"):
+        moved = f"{prev_move:+.3f}%" if prev_move is not None else "unknown"
+        streak = f"streak {state.streak_before}, last window moved {moved}"
+    else:
+        streak = f"streak {state.streak_before}, duals in last {sim.dual_lookback}: {state.recent_duals}"
+    if action == "against":
+        message = (f"🎯 Against-the-streak window ({streak}): buying {sim.contracts} {state.bet_side} at its ask "
+                   f"if ≤{sim.against_max_cents}¢, held to the end.")
+    elif action == "fav":
         message = (f"🎯 Favourite window ({streak}): buying {sim.contracts} of the higher-priced side at its ask "
                    f"if ≤{sim.fav_max_cents}¢, held to the end.")
     elif action == "dual":
@@ -297,11 +305,19 @@ def parse_args():
     parser.add_argument("--contracts", type=int, default=8, help="Contracts per side (default 8).")
     parser.add_argument("--place-at", type=int, default=None, metavar="SECONDS_LEFT",
                         help="Place both limits when this many seconds are left (default: at window start).")
-    parser.add_argument("--strategy", choices=("regime", "fav", "dual"), default=None,
+    parser.add_argument("--strategy", choices=("regime", "fav", "against", "combo", "dual"), default=None,
                         help="regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
                              "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
-                             "no duals (own trades file, can run beside another bot). dual: the old dual every "
-                             "window with the --max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
+                             "no duals. against: only buy the side against a streak of --against-min-streak+ when "
+                             "the last window moved --against-min-move%%+. combo: fav and against together. (fav, "
+                             "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
+                             "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
+    parser.add_argument("--against-min-streak", type=int, default=3, metavar="WINDOWS",
+                        help="Against: bet only after this many same winners in a row or more (default 3).")
+    parser.add_argument("--against-min-move", type=float, default=0.02, metavar="PCT",
+                        help="Against: bet only when the last window moved this many percent or more (default 0.02).")
+    parser.add_argument("--against-max", type=int, default=99, metavar="CENTS",
+                        help="Against: only buy at this ask or below (default 99 = no cap).")
     parser.add_argument("--fav-max", type=int, default=55, metavar="CENTS",
                         help="Regime: only buy the favourite at this ask or below (default 55).")
     parser.add_argument("--dual-lookback", type=int, default=3, metavar="WINDOWS",
@@ -356,6 +372,8 @@ def main():
         raise SystemExit("--fav-max must be between 1 and 99 cents")
     if args.dual_lookback < 1:
         raise SystemExit("--dual-lookback must be >= 1")
+    if args.against_min_streak < 1 or args.against_min_move < 0 or not 1 <= args.against_max <= 99:
+        raise SystemExit("--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
     if args.max_prev_move_pct < 0:
         raise SystemExit("--max-prev-move-pct must be >= 0")
     if args.hedge_at and not args.limit < args.hedge_at < 100:
@@ -366,9 +384,9 @@ def main():
         raise SystemExit("--cancel-left-pct must be between 0 and 100")
 
     dual_trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
-    if strategy == "fav":
-        updown_file = f"{coin}-{duration}-fav-updown.csv"
-        trades_file = f"{coin}-{duration}-predict-fav-trades.csv"
+    if strategy in ("fav", "against", "combo"):
+        updown_file = f"{coin}-{duration}-{strategy}-updown.csv"
+        trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
     else:
         updown_file = f"{coin}-{duration}-updown.csv"
         trades_file = dual_trades_file
@@ -385,7 +403,8 @@ def main():
                   stop_loss_min_cents=args.stop_loss_min,
                   reload_to=args.capital if args.reload_to is None else args.reload_to,
                   reloaded_total=last_reloaded_total(trades_file), strategy=strategy, fav_max_cents=args.fav_max,
-                  dual_lookback=args.dual_lookback)
+                  dual_lookback=args.dual_lookback, against_min_streak=args.against_min_streak,
+                  against_min_move_pct=args.against_min_move, against_max_cents=args.against_max)
     if trades_file != dual_trades_file:
         sim.load_history(dual_trades_file)
     sim.load_history(trades_file)

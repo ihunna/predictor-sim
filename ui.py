@@ -491,7 +491,17 @@ class Dashboard:
         for line in events:
             parts.append(Text(line, style="dim"))
 
-        if sim.strategy == "fav":
+        if sim.strategy == "combo":
+            skip = (f"combo: 2 in a row → favourite ≤{sim.fav_max_cents}¢ · {sim.against_min_streak}+ in a row & "
+                    f"last move ≥{sim.against_min_move_pct:.2f}% → other side, else skip")
+            if state is not None and state.action:
+                skip += f" · now: {state.action}"
+        elif sim.strategy == "against":
+            skip = (f"against: {sim.against_min_streak}+ in a row & last move ≥{sim.against_min_move_pct:.2f}% "
+                    f"→ other side ≤{sim.against_max_cents}¢, else skip")
+            if state is not None and state.action:
+                skip += f" · now: {state.action}"
+        elif sim.strategy == "fav":
             skip = f"favourite only: 2 in a row → favourite ≤{sim.fav_max_cents}¢, else skip"
             if state is not None and state.action:
                 skip += f" · now: {state.action}"

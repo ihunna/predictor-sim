@@ -23,6 +23,9 @@ DEFAULT_HOST = "root@187.7.17.28"
 DEFAULT_REMOTE_DIR = "~/predictor-sim"
 DEFAULT_FILES = [
     "*-predict-dual-trades.csv",
+    "*-predict-fav-trades.csv",
+    "*-predict-against-trades.csv",
+    "*-predict-combo-trades.csv",
     "*-updown.csv",
     # logs archived after a column change; without these a pull after a restart replaces the history
     "*-predict-dual-trades.csv.2*.bak",

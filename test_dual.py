@@ -492,6 +492,43 @@ def test_regime_favourite_window(tmp):
     assert not state.trading and "fav_down_58c_over_55c" in state.notes and not state.orders
 
 
+def test_against_strategy(tmp):
+    sim = new_sim(tmp)
+    sim.strategy = "against"
+    three_up = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
+                START - 1200: ["Down", True]}
+    sim.history = dict(three_up)
+    assert sim.regime_decision(START, None, 0.01) == ("skip", "streak_3_up_move_+0.010pct")
+    assert sim.regime_decision(START, None, None) == ("skip", "prev_move_unknown")
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
+    assert sim.regime_decision(START, None, 0.08) == ("skip", "streak_2_up")
+
+    sim.history = dict(three_up)
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, None, -0.05) == ("against", "streak_3_up_move_-0.050pct")
+    assert state.bet_side == "Down"
+    sim.resolve_decision(state, None, mode="against")
+    for offset, up, down in ((1, 0.53, 0.48), (290, 0.97, 0.04)):
+        sim.on_tick(START + offset, up, down)
+    state = sim.finish_window()
+    assert state.fill_type == "only_down" and state.avg_price("Down") == 0.48 and state.stop_side is None
+    row = sim.settle(state, "Down", 1, 2, None, taker_fee_bps=200)
+    assert row["pnl"] == "4.0832"
+
+
+def test_combo_strategy(tmp):
+    sim = new_sim(tmp)
+    sim.strategy = "combo"
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
+    assert sim.regime_decision(START, None, 0.08) == ("fav", "streak_2_up")
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
+                   START - 1200: ["Down", True]}
+    assert sim.regime_decision(START, None, 0.08) == ("against", "streak_3_up_move_+0.080pct")
+    assert sim.regime_decision(START, None, 0.01) == ("skip", "streak_3_up_move_+0.010pct")
+    sim.history = {START - 300: ["Up", False], START - 600: ["Down", True]}
+    assert sim.regime_decision(START, None, 0.08) == ("skip", "streak_1_up")
+
+
 def test_regime_history_from_log(tmp):
     sim = regime_sim(tmp)
     state = run_window(sim, [(0, 0.50, 0.51), (60, 0.28, 0.73), (200, 0.73, 0.28)])
@@ -533,6 +570,8 @@ def main():
             test_old_log_upgraded_in_place,
             test_regime_decision,
             test_regime_favourite_window,
+            test_against_strategy,
+            test_combo_strategy,
             test_regime_history_from_log,
         ):
             test(tempfile.mkdtemp(dir=tmp))
