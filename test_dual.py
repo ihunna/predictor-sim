@@ -465,6 +465,12 @@ def test_regime_decision(tmp):
     assert sim.regime_decision(START, "Up") == ("fav", "streak_2_up")
     assert sim.current.streak_before == "2 Up" and sim.current.recent_duals == "1/3"
 
+    sim.strategy = "fav"
+    sim.history = {START - 300: ["Down", True], START - 600: ["Up", True]}
+    assert sim.regime_decision(START) == ("skip", "streak_1_down")
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
+    assert sim.regime_decision(START) == ("fav", "streak_2_up")
+
 
 def test_regime_favourite_window(tmp):
     sim = regime_sim(tmp, stop_loss_seconds=20)

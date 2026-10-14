@@ -491,7 +491,11 @@ class Dashboard:
         for line in events:
             parts.append(Text(line, style="dim"))
 
-        if sim.strategy == "regime":
+        if sim.strategy == "fav":
+            skip = f"favourite only: 2 in a row → favourite ≤{sim.fav_max_cents}¢, else skip"
+            if state is not None and state.action:
+                skip += f" · now: {state.action}"
+        elif sim.strategy == "regime":
             skip = (f"regime: 2 in a row → favourite ≤{sim.fav_max_cents}¢, dual if one in last "
                     f"{sim.dual_lookback}, else skip")
             if state is not None and state.action:

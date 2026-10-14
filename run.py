@@ -106,7 +106,7 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     if not state.decision_pending:
         ui.prev_move_known(state, prev_move, None)
         return
-    if sim.strategy == "regime":
+    if sim.strategy in ("regime", "fav"):
         decide_regime(ui, sim, state, prev_move)
         return
     reason = sim.prev_move_skip_reason(prev_move)
@@ -297,9 +297,10 @@ def parse_args():
     parser.add_argument("--contracts", type=int, default=8, help="Contracts per side (default 8).")
     parser.add_argument("--place-at", type=int, default=None, metavar="SECONDS_LEFT",
                         help="Place both limits when this many seconds are left (default: at window start).")
-    parser.add_argument("--strategy", choices=("regime", "dual"), default=None,
+    parser.add_argument("--strategy", choices=("regime", "fav", "dual"), default=None,
                         help="regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
-                             "the last --dual-lookback windows was a dual, else skip. dual: the old dual every "
+                             "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
+                             "no duals (own trades file, can run beside another bot). dual: the old dual every "
                              "window with the --max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
     parser.add_argument("--fav-max", type=int, default=55, metavar="CENTS",
                         help="Regime: only buy the favourite at this ask or below (default 55).")
@@ -364,8 +365,13 @@ def main():
     if not 0 <= args.cancel_left_pct < 100:
         raise SystemExit("--cancel-left-pct must be between 0 and 100")
 
-    updown_file = f"{coin}-{duration}-updown.csv"
-    trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
+    dual_trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
+    if strategy == "fav":
+        updown_file = f"{coin}-{duration}-fav-updown.csv"
+        trades_file = f"{coin}-{duration}-predict-fav-trades.csv"
+    else:
+        updown_file = f"{coin}-{duration}-updown.csv"
+        trades_file = dual_trades_file
     if args.capital_last is not None:
         if args.capital_last <= 0:
             raise SystemExit("--capital-last must be > 0")
@@ -380,6 +386,8 @@ def main():
                   reload_to=args.capital if args.reload_to is None else args.reload_to,
                   reloaded_total=last_reloaded_total(trades_file), strategy=strategy, fav_max_cents=args.fav_max,
                   dual_lookback=args.dual_lookback)
+    if trades_file != dual_trades_file:
+        sim.load_history(dual_trades_file)
     sim.load_history(trades_file)
     print(f"⚙️  Predict.fun dual | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
     print(sim.summarize())

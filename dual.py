@@ -2,7 +2,8 @@
 
 With the "regime" strategy each window is instead decided from the recent ones (``regime_decision``): exactly 2
 same winners in a row -> buy the favourite (the side with the higher ask) at its ask and hold; else the dual if one
-of the last few windows was a dual (both sides reached the limit); else skip.
+of the last few windows was a dual (both sides reached the limit); else skip. The "fav" strategy only takes the
+favourite bets and never places a dual.
 
 An order fills when its side's ask reaches its price or lower. If the ask is already at or below the price when
 the order goes in, it fills at once at the ask (a taker fill); otherwise it fills at its price (maker).
@@ -514,6 +515,12 @@ class DualSim:
                 stop += f" (only if it sells for {self.stop_loss_min_cents}¢+)"
         else:
             stop = f"stop-loss paused (logging what it would sell at {format_time(self.stop_loss_seconds)} left)"
+        if self.strategy == "fav":
+            return (
+                f"🎯 Favourite only: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
+                f"(≤{self.fav_max_cents}¢, held to the end); else skip | capital ${self.capital:.2f} "
+                f"({self.capital_source})"
+            )
         if self.strategy == "regime":
             return (
                 f"🎯 Regime: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
@@ -579,6 +586,8 @@ class DualSim:
             return "skip", "streak_unknown"
         if streak[0] == 2:
             return "fav", f"streak_2_{streak[1].lower()}"
+        if self.strategy == "fav":
+            return "skip", f"streak_{streak[0]}_{streak[1].lower()}"
         if any(known):
             return "dual", f"dual_in_last_{self.dual_lookback}"
         if len(known) == len(duals):
