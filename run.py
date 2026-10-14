@@ -11,8 +11,10 @@ import socket
 import threading
 import time
 
+from combo import ComboSim
 from dual import DualSim, last_capital_after, last_reloaded_total
-from logs import format_lowest_cents, log_to_csv
+from leader import LeaderSim
+from logs import format_lowest_cents, format_time, log_to_csv
 from predict_feed import (
     CHAINLINK_FEED_IDS,
     SUPPORTED_DURATIONS,
@@ -114,9 +116,16 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     message = None
     if reason and prev_move is None:
         message = "⏸️ Last window's move is unknown (no official prices seen): logging this window without trading."
+    elif reason and sim.strategy == "leader":
+        message = (f"⏸️ Last window moved {prev_move:+.3f}% (needs {sim.min_prev_move_pct:.2f}%+): "
+                   f"logging this window without trading.")
     elif reason:
         message = (f"⏸️ Last window moved {prev_move:+.3f}% (limit {sim.max_prev_move_pct:.2f}%): "
                    f"logging this window without trading.")
+    elif sim.strategy == "leader":
+        start, end = sim.watch_seconds()
+        message = (f"👀 Last window moved {prev_move:+.3f}%: watching {format_time(start)}-{format_time(end)} in "
+                   f"for a side to reach {sim.leader_at_cents}¢, then buying it at its ask (≤{sim.leader_max_cents}¢).")
     ui.prev_move_known(state, prev_move, message)
 
 
@@ -305,8 +314,22 @@ def parse_args():
     parser.add_argument("--contracts", type=int, default=8, help="Contracts per side (default 8).")
     parser.add_argument("--place-at", type=int, default=None, metavar="SECONDS_LEFT",
                         help="Place both limits when this many seconds are left (default: at window start).")
-    parser.add_argument("--strategy", choices=("regime", "fav", "against", "combo", "dual"), default=None,
-                        help="regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
+    parser.add_argument("--leader-at", type=int, default=60, metavar="CENTS",
+                        help="Leader: a side is the leader when its bid first reaches this in the watch period "
+                             "(default 60).")
+    parser.add_argument("--leader-max", type=int, default=70, metavar="CENTS",
+                        help="Leader: buy the leader at its ask only up to this price (default 70).")
+    parser.add_argument("--min-prev-move-pct", type=float, default=0.10, metavar="PCT",
+                        help="Leader: trade only when the last window moved this many percent or more "
+                             "(default 0.10; 0 = any move).")
+    parser.add_argument("--watch-from-pct", type=float, default=20.0,
+                        help="Leader: start of the watch period, in percent of the window (default 20: 1:00 into 5m).")
+    parser.add_argument("--watch-to-pct", type=float, default=40.0,
+                        help="Leader: end of the watch period, in percent of the window (default 40: 2:00 into 5m).")
+    parser.add_argument("--strategy", choices=("leader", "regime", "fav", "against", "combo", "dual"), default=None,
+                        help="leader: after a last move of --min-prev-move-pct+, buy the first side to reach "
+                             "--leader-at in the watch period at its ask, held to the end (own trades file). "
+                             "regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
                              "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
                              "no duals. against: only buy the side against a streak of --against-min-streak+ when "
                              "the last window moved --against-min-move%%+. combo: fav and against together. (fav, "
@@ -388,7 +411,13 @@ def main():
 
     updown_file = f"{coin}-{duration}-updown.csv"
     dual_trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
-    if strategy in ("fav", "against", "combo"):
+    if not 1 <= args.leader_at <= args.leader_max <= 99:
+        raise SystemExit("--leader-at and --leader-max must be between 1 and 99 cents, --leader-max >= --leader-at")
+    if args.min_prev_move_pct < 0:
+        raise SystemExit("--min-prev-move-pct must be >= 0")
+    if not 0 <= args.watch_from_pct < args.watch_to_pct < 100:
+        raise SystemExit("--watch-from-pct must be below --watch-to-pct, both between 0 and 100")
+    if strategy in ("leader", "fav", "against", "combo"):
         trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
     else:
         trades_file = dual_trades_file
@@ -399,19 +428,27 @@ def main():
     else:
         capital, source = last_capital_after(trades_file, args.capital)
 
-    sim = DualSim(coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source,
-                  max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct, hedge_cents=args.hedge_at,
-                  stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,
+    sim_args = (coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source)
+    common = dict(max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct,
+                  hedge_cents=args.hedge_at, stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,
                   stop_loss_min_cents=args.stop_loss_min,
                   reload_to=args.capital if args.reload_to is None else args.reload_to,
-                  reloaded_total=last_reloaded_total(trades_file), strategy=strategy, fav_max_cents=args.fav_max,
-                  dual_lookback=args.dual_lookback, against_min_streak=args.against_min_streak,
-                  against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
-                  fav_max_move_pct=args.fav_max_move)
-    if trades_file != dual_trades_file:
-        sim.load_history(dual_trades_file)
-    sim.load_history(trades_file)
-    print(f"⚙️  Predict.fun dual | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
+                  reloaded_total=last_reloaded_total(trades_file))
+    if strategy == "leader":
+        sim = LeaderSim(*sim_args, **common, leader_at_cents=args.leader_at, leader_max_cents=args.leader_max,
+                        min_prev_move_pct=args.min_prev_move_pct, watch_from_pct=args.watch_from_pct,
+                        watch_to_pct=args.watch_to_pct)
+    elif strategy == "dual":
+        sim = DualSim(*sim_args, **common)
+    else:
+        sim = ComboSim(*sim_args, **common, strategy=strategy, fav_max_cents=args.fav_max,
+                       dual_lookback=args.dual_lookback, against_min_streak=args.against_min_streak,
+                       against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
+                       fav_max_move_pct=args.fav_max_move)
+        if trades_file != dual_trades_file:
+            sim.load_history(dual_trades_file)
+        sim.load_history(trades_file)
+    print(f"⚙️  Predict.fun {strategy} | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
     print(sim.summarize())
     print(f"📁 updown={updown_file} | trades={trades_file}")
 

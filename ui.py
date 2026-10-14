@@ -83,7 +83,7 @@ def _side_line(state, label):
     else:
         parts = []
         for o in state.side_orders(label):
-            tag = {"hedge": " lock-in", "profit": " extra"}.get(o.kind, "")
+            tag = {"hedge": " lock-in", "profit": " extra", "leader": " leader", "trail": " trailing"}.get(o.kind, "")
             if o.filled:
                 parts.append(f"✅ {o.contracts} @ {round(o.fill_price * 100)}¢{tag} at {format_time(o.fill_time_left)} "
                              f"left" + (" (taker)" if o.taker else ""))
@@ -151,7 +151,9 @@ class PlainUI:
         if skip_message:
             self._emit(skip_message)
         elif state.trading:
-            self._emit(f"📈 Last window moved {prev_text}: placing both {self.sim.limit_cents}¢ limits.")
+            action = ("watching for a leader" if self.sim.strategy == "leader"
+                      else f"placing both {self.sim.limit_cents}¢ limits")
+            self._emit(f"📈 Last window moved {prev_text}: {action}.")
         else:
             self._emit(f"📈 Last window moved {prev_text}.")
 
@@ -409,10 +411,15 @@ class Dashboard:
                 elif state.decision_pending:
                     order_lines.append(Text("checking last window…", style="dim"))
                 elif state.placed_time_left is None:
-                    order_lines.append(Text("not placed yet", style="dim"))
+                    if state.mode == "leader":
+                        watch_from, watch_to = sim.watch_seconds()
+                        order_lines.append(Text(f"waiting for a leader ({format_time(watch_from)}-"
+                                                f"{format_time(watch_to)} in)", style="dim"))
+                    else:
+                        order_lines.append(Text("not placed yet", style="dim"))
                 else:
                     for o in state.side_orders(label):
-                        tag = {"hedge": " lock-in", "profit": " extra"}.get(o.kind, "")
+                        tag = {"hedge": " lock-in", "profit": " extra", "leader": " leader", "trail": " trailing"}.get(o.kind, "")
                         if o.filled:
                             order_lines.append(Text(
                                 f"✅ bought {o.contracts} @ {round(o.fill_price * 100)}¢{tag} at "
@@ -491,7 +498,12 @@ class Dashboard:
         for line in events:
             parts.append(Text(line, style="dim"))
 
-        if sim.strategy == "combo":
+        if sim.strategy == "leader":
+            skip = (f"leader: first to {sim.leader_at_cents}¢ → buy at ask ≤{sim.leader_max_cents}¢, "
+                    + (f"last move ≥{sim.min_prev_move_pct:.2f}%" if sim.min_prev_move_pct > 0 else "any move"))
+            if state is not None and state.action:
+                skip += f" · now: {state.action}"
+        elif sim.strategy == "combo":
             skip = (f"combo: 2 in a row → favourite ≤{sim.fav_max_cents}¢ · {sim.against_min_streak}+ in a row & "
                     f"last move ≥{sim.against_min_move_pct:.2f}% → other side, else skip")
             if state is not None and state.action:
@@ -512,7 +524,8 @@ class Dashboard:
                 skip += f" · now: {state.action}"
         else:
             skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
-        header = (f"Predict.fun dual · {self.coin.upper()} {self.duration}m · {sim.limit_cents}¢ × {sim.contracts} "
+        prices = "at ask" if sim.strategy == "leader" else f"{sim.limit_cents}¢"
+        header = (f"Predict.fun {sim.strategy} · {self.coin.upper()} {self.duration}m · {prices} × {sim.contracts} "
                   f"· {skip}")
         main = Panel(Group(*parts), title=f"[bold]{header}[/bold]", subtitle=datetime.now().strftime("%H:%M:%S"),
                      border_style="cyan", padding=(0, 1))

@@ -1,10 +1,6 @@
-"""Dual-limit simulator: a limit buy on both Up and Down every window.
-
-With the "regime" strategy each window is instead decided from the recent ones (``regime_decision``): exactly 2
-same winners in a row -> buy the favourite (the side with the higher ask) at its ask and hold; else the dual if one
-of the last few windows was a dual (both sides reached the limit); else skip. The "fav" strategy only takes the
-favourite bets and never places a dual. The "against" strategy only buys the side against a streak of 3+ when the
-last window moved enough, and "combo" runs both of those rules.
+"""Dual-limit simulator: a limit buy on both Up and Down every window, plus everything shared by the other
+strategies (price tracking, logging, settlement). combo.py (regime / fav / against / combo) and leader.py (leader +
+hedge) build on ``DualSim``.
 
 An order fills when its side's ask reaches its price or lower. If the ask is already at or below the price when
 the order goes in, it fills at once at the ask (a taker fill); otherwise it fills at its price (maker).
@@ -42,6 +38,8 @@ TRADES_HEADER = [
     "action_reason",
     "streak_before",
     "recent_duals",
+    "leader_side",
+    "leader_time_left",
     "limit_cents",
     "contracts",
     "preopen_up_ask",
@@ -294,7 +292,7 @@ def _secs(value):
 @dataclass
 class Order:
     side: str
-    kind: str  # "main", "hedge" (lock-in) or "profit" (rest of the second side at the original limit)
+    kind: str  # "main", "hedge" (lock-in), "profit" (rest of the second side at the original limit), "leader", "trail"
     price: float
     contracts: int
     placed_time_left: float
@@ -373,7 +371,10 @@ class WindowState:
     volume_early_time_left: float | None = None
     trading: bool = True
     decision_pending: bool = False
-    mode: str = "dual"  # "dual" (both limits), "fav" (buy the favourite at its ask) or "against" (buy bet_side)
+    mode: str = "dual"  # "dual" (both limits), "fav" (buy the favourite at its ask), "against" (buy bet_side), "leader"
+    leader_side: str | None = None
+    leader_time_left: float | None = None
+    reached_early: set = field(default_factory=set)  # sides whose bid reached the leader level before the watch
     bet_side: str | None = None  # side bought in "against" mode
     action: str = ""  # strategy decision: dual, fav or skip
     action_reason: str = ""
@@ -400,7 +401,7 @@ class WindowState:
         return self.depth_sums.get(key, 0.0) / self.depth_samples if self.depth_samples else None
 
     def side_orders(self, side):
-        rank = {"main": 0, "hedge": 1, "profit": 2}
+        rank = {"main": 0, "hedge": 1, "profit": 2, "leader": 0, "trail": 0}
         return sorted((o for o in self.orders if o.side == side), key=lambda o: rank[o.kind])
 
     def fills(self, side):
@@ -466,19 +467,12 @@ class WindowState:
 
 
 class DualSim:
+    strategy = "dual"
+    start_mode = "dual"  # WindowState.mode at the start of each window
+
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
-                 stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, strategy="dual", fav_max_cents=55,
-                 dual_lookback=3, against_min_streak=3, against_min_move_pct=0.02, against_max_cents=99,
-                 fav_max_move_pct=0.02):
-        self.strategy = strategy
-        self.fav_max_move_pct = fav_max_move_pct
-        self.against_min_streak = against_min_streak
-        self.against_min_move_pct = against_min_move_pct
-        self.against_max_cents = against_max_cents
-        self.fav_max_cents = fav_max_cents
-        self.dual_lookback = dual_lookback
-        self.history = {}  # window_start -> [outcome or None, dual (both sides reached the limit) or None]
+                 stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
@@ -506,6 +500,13 @@ class DualSim:
             f"skip after a last-window move of {self.max_prev_move_pct:.2f}% or more"
             if self.max_prev_move_pct > 0 else "no filters"
         )
+        return (
+            f"🎯 Dual: {self.limit_cents}¢ limit on Up and Down, {self.contracts} contracts each, placed {when}, "
+            f"{self.dual_rules_text()}, {skip} | capital ${self.capital:.2f} ({self.capital_source})"
+        )
+
+    def dual_rules_text(self):
+        """Hedge, cancel and stop-loss settings of the dual, for the summary line."""
         cancel = (
             f"cancel both if nothing has filled with {format_time(self.cancel_left_seconds())} left"
             if self.cancel_left_pct > 0 else "never cancel"
@@ -522,129 +523,7 @@ class DualSim:
                 stop += f" (only if it sells for {self.stop_loss_min_cents}¢+)"
         else:
             stop = f"stop-loss paused (logging what it would sell at {format_time(self.stop_loss_seconds)} left)"
-        if self.strategy == "combo":
-            return (
-                f"🎯 Favourite + against: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
-                f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}); after {self.against_min_streak}+ in a row, when the last window moved "
-                f"{self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
-                f"(≤{self.against_max_cents}¢); held to the end; else skip | capital ${self.capital:.2f} "
-                f"({self.capital_source})"
-            )
-        if self.strategy == "against":
-            return (
-                f"🎯 Against the streak: after {self.against_min_streak}+ same winners in a row, when the last window "
-                f"moved {self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
-                f"(≤{self.against_max_cents}¢, held to the end); else skip | capital ${self.capital:.2f} "
-                f"({self.capital_source})"
-            )
-        if self.strategy == "fav":
-            return (
-                f"🎯 Favourite only: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
-                f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}, held to the end); else skip | capital ${self.capital:.2f} "
-                f"({self.capital_source})"
-            )
-        if self.strategy == "regime":
-            return (
-                f"🎯 Regime: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
-                f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}, held to the end); else a {self.limit_cents}¢ dual × {self.contracts} "
-                f"if one of the last {self.dual_lookback} windows was a dual; else skip | dual windows: {hedge}, "
-                f"{cancel}, {stop} | capital ${self.capital:.2f} ({self.capital_source})"
-            )
-        return (
-            f"🎯 Dual: {self.limit_cents}¢ limit on Up and Down, {self.contracts} contracts each, placed {when}, "
-            f"{hedge}, {cancel}, {stop}, {skip} | capital ${self.capital:.2f} ({self.capital_source})"
-        )
-
-    def _fav_skip_text(self):
-        if self.fav_max_move_pct <= 0:
-            return ""
-        return f", only when the last window moved under {self.fav_max_move_pct:.2f}%"
-
-    def load_history(self, path):
-        """Fills the window history (winner, dual or not) from an existing trades log."""
-        if not path or not os.path.isfile(path):
-            return
-        with open(path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                try:
-                    start = int(row["window_start"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                outcome = row.get("outcome")
-                try:
-                    dual = int(row["lowest_up"]) <= self.limit_cents and int(row["lowest_down"]) <= self.limit_cents
-                except (KeyError, TypeError, ValueError):
-                    dual = None
-                self.history[start] = [outcome if outcome in ("Up", "Down", "Tie") else None, dual]
-
-    def _streak_before(self, window_start):
-        """(count, side) of the same winner in a row ending with the last window; None when not known."""
-        step = self.duration * 60
-        last = self.history.get(window_start - step)
-        if not last or last[0] is None:
-            return None
-        if last[0] == "Tie":
-            return 1, "Tie"
-        count, start = 1, window_start - 2 * step
-        while count < 50:
-            entry = self.history.get(start)
-            if not entry or entry[0] is None:
-                return None
-            if entry[0] != last[0]:
-                break
-            count, start = count + 1, start - step
-        return count, last[0]
-
-    def _fav_unless_move(self, streak, prev_move_pct):
-        """The favourite bet, only when the last window moved less than ``fav_max_move_pct``% (0 = any move)."""
-        reason = f"streak_2_{streak[1].lower()}"
-        if self.fav_max_move_pct <= 0:
-            return "fav", reason
-        if prev_move_pct is None:
-            return "skip", f"{reason}_prev_move_unknown"
-        if abs(prev_move_pct) >= self.fav_max_move_pct:
-            return "skip", f"{reason}_move_{prev_move_pct:+.3f}pct"
-        return "fav", reason
-
-    def regime_decision(self, window_start, prev_outcome=None, prev_move_pct=None):
-        """("dual" | "fav" | "against" | "skip", reason) from the recent windows, and logs the inputs on the current
-        state: exactly 2 same winners in a row -> buy the favourite; else dual if one of the last ``dual_lookback``
-        windows was a dual; else skip (BTC is trending). The "against" strategy only buys the side against a streak
-        of ``against_min_streak``+ when the last window moved ``against_min_move_pct``% or more."""
-        step = self.duration * 60
-        if prev_outcome in ("Up", "Down", "Tie"):
-            self.history.setdefault(window_start - step, [None, None])[0] = prev_outcome
-        streak = self._streak_before(window_start)
-        duals = [self.history.get(window_start - i * step, [None, None])[1] for i in range(1, self.dual_lookback + 1)]
-        known = [d for d in duals if d is not None]
-        state = self.current
-        if state is not None and state.window_start == window_start:
-            state.streak_before = f"{streak[0]} {streak[1]}" if streak else "unknown"
-            state.recent_duals = f"{sum(known)}/{len(duals)}" + ("" if len(known) == len(duals) else "?")
-        if streak is None:
-            return "skip", "streak_unknown"
-        if self.strategy == "combo" and streak[0] == 2:
-            return self._fav_unless_move(streak, prev_move_pct)
-        if self.strategy in ("against", "combo"):
-            n, side = streak
-            if side == "Tie" or n < self.against_min_streak:
-                return "skip", f"streak_{n}_{side.lower()}"
-            if prev_move_pct is None:
-                return "skip", "prev_move_unknown"
-            if abs(prev_move_pct) < self.against_min_move_pct:
-                return "skip", f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
-            if state is not None and state.window_start == window_start:
-                state.bet_side = "Down" if side == "Up" else "Up"
-            return "against", f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
-        if streak[0] == 2:
-            return self._fav_unless_move(streak, prev_move_pct)
-        if self.strategy == "fav":
-            return "skip", f"streak_{streak[0]}_{streak[1].lower()}"
-        if any(known):
-            return "dual", f"dual_in_last_{self.dual_lookback}"
-        if len(known) == len(duals):
-            return "skip", f"no_dual_in_last_{self.dual_lookback}"
-        return "skip", "recent_duals_unknown"
+        return f"{hedge}, {cancel}, {stop}"
 
     def hedge_contracts(self, first_cost):
         """Contracts at the hedge price that break even if that side wins: cost / (1 - hedge), rounded up."""
@@ -675,7 +554,8 @@ class DualSim:
         orders (lows are still tracked) until ``resolve_decision`` is called."""
         now = time.time() if now is None else now
         state = WindowState(window_start=window_start, window_end=window_end, slug=slug, market_id=str(market_id),
-                            decision_pending=decision_pending)
+                            decision_pending=decision_pending,
+                            mode=self.start_mode)
         if self.reload_to > 0 and self.capital < self.order_cost():
             state.reload = round(self.reload_to - self.capital, 4)
             self.capital = self.reload_to
@@ -728,6 +608,10 @@ class DualSim:
         if (up_ask > 0 or down_ask > 0) and state.asks_end is None and remaining <= END_SAMPLE_SECONDS:
             state.asks_end = (up_ask, down_ask)  # a side's ask is 0 when its book is empty (window decided)
 
+        self._trade_tick(state, now, remaining, up_ask, down_ask)
+
+    def _trade_tick(self, state, now, remaining, up_ask, down_ask):
+        """Places, fills, hedges, cancels and stops the window's orders."""
         if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
                 or state.stop_time_left is not None):
             return
@@ -742,32 +626,9 @@ class DualSim:
         if state.placed_time_left is None:
             if up_ask <= 0 or down_ask <= 0:
                 return
-            if state.mode == "fav":
-                if up_ask == down_ask:
-                    return
-                side, price = ("Up", up_ask) if up_ask > down_ask else ("Down", down_ask)
-                if price > self.fav_max_cents / 100 + 1e-9:
-                    state.trading = False
-                    state.notes.append(f"fav_{side.lower()}_{round(price * 100)}c_over_{self.fav_max_cents}c")
-                    state.notes.append("not_traded")
-                    return
-                orders = [Order(side, "main", price, self.contracts, remaining)]
-            elif state.mode == "against":
-                side = state.bet_side
-                price = up_ask if side == "Up" else down_ask
-                if price > self.against_max_cents / 100 + 1e-9:
-                    state.trading = False
-                    state.notes.append(f"against_{side.lower()}_{round(price * 100)}c_over_{self.against_max_cents}c")
-                    state.notes.append("not_traded")
-                    return
-                orders = [Order(side, "main", price, self.contracts, remaining)]
-            else:
-                if self.place_at is not None and remaining > self.place_at:
-                    return
-                orders = [
-                    Order("Up", "main", self.limit, self.contracts, remaining),
-                    Order("Down", "main", self.limit, self.contracts, remaining),
-                ]
+            orders = self._first_orders(state, remaining, up_ask, down_ask)
+            if not orders:
+                return
             state.placed_time_left = remaining
             state.up_ask_at_place = up_ask
             state.down_ask_at_place = down_ask
@@ -780,6 +641,15 @@ class DualSim:
         self._maybe_hedge(state, remaining, asks)
         self._check_stop_points(state, remaining, asks)
         self._maybe_stop(state, remaining, asks)
+
+    def _first_orders(self, state, remaining, up_ask, down_ask):
+        """Orders to place now (both asks are known); empty to wait."""
+        if self.place_at is not None and remaining > self.place_at:
+            return []
+        return [
+            Order("Up", "main", self.limit, self.contracts, remaining),
+            Order("Down", "main", self.limit, self.contracts, remaining),
+        ]
 
     def _check_stop_points(self, state, remaining, asks):
         """Logs what the stop-loss rule would sell at each STOP_CHECK_SECONDS mark (no trading)."""
@@ -926,9 +796,6 @@ class DualSim:
 
     def finish_window(self):
         state, self.current = self.current, None
-        if state is not None:
-            dual = state.lowest_up <= self.limit + 1e-9 and state.lowest_down <= self.limit + 1e-9
-            self.history.setdefault(state.window_start, [None, None])[1] = dual
         return state
 
     def compute_result(self, state, outcome, maker_fee_bps=0, taker_fee_bps=0):
@@ -955,6 +822,10 @@ class DualSim:
             return round(fee, 4), None
         return round(fee, 4), round(payout - cost - fee, 4)
 
+    def limit_text(self):
+        """The limit_cents log column."""
+        return self.limit_cents
+
     def settle(self, state, outcome, start_price, end_price, prev_move, maker_fee_bps=0, taker_fee_bps=0, notes=()):
         """Writes the trade row and moves the balance. Returns the row dict."""
         fee, pnl = self.compute_result(state, outcome, maker_fee_bps, taker_fee_bps)
@@ -971,8 +842,6 @@ class DualSim:
             all_notes.append("unsettled")
 
         with self.write_lock:
-            if outcome in ("Up", "Down", "Tie"):
-                self.history.setdefault(state.window_start, [None, None])[0] = outcome
             capital_before = self.capital
             if pnl is not None:
                 self.capital = round(self.capital + pnl, 4)
@@ -989,7 +858,9 @@ class DualSim:
                 "action_reason": state.action_reason,
                 "streak_before": state.streak_before,
                 "recent_duals": state.recent_duals,
-                "limit_cents": self.limit_cents,
+                "leader_side": state.leader_side or "",
+                "leader_time_left": _secs(state.leader_time_left),
+                "limit_cents": self.limit_text(),
                 "contracts": self.contracts,
                 "preopen_up_ask": _cents(state.preopen_asks[0]) if state.preopen_asks else "",
                 "preopen_down_ask": _cents(state.preopen_asks[1]) if state.preopen_asks else "",
@@ -1080,22 +951,27 @@ class DualSim:
                 writer.writeheader()
             writer.writerow(row)
 
+    def status_label(self):
+        return f"Dual {self.limit_cents}¢"
+
+    def waiting_text(self):
+        return "waiting to place"
+
+    def orders_text(self, state):
+        up = "✅" if state.up_fill_time_left is not None else "⏳"
+        down = "✅" if state.down_fill_time_left is not None else "⏳"
+        return f"Up{up} Down{down}"
+
     def display_status(self):
         state = self.current
         if state is None:
-            return f"Dual: idle | ${self.capital:.2f}"
+            return f"{self.status_label()}: idle | ${self.capital:.2f}"
         if not state.trading:
-            orders = f"not trading ({state.notes[0]})"
+            orders = f"not trading ({state.notes[0] if state.notes else 'skipped'})"
         elif state.decision_pending:
             orders = "checking last window"
         elif state.placed_time_left is None:
-            orders = "waiting to place"
-        elif state.mode != "dual":
-            label = "favourite" if state.mode == "fav" else "against"
-            orders = " ".join(f"{label} {o.side} {o.contracts} @ {round(o.fill_price * 100)}¢"
-                              for o in state.orders if o.filled) or f"{label} not filled"
+            orders = self.waiting_text()
         else:
-            up = "✅" if state.up_fill_time_left is not None else "⏳"
-            down = "✅" if state.down_fill_time_left is not None else "⏳"
-            orders = f"Up{up} Down{down}"
-        return f"Dual {self.limit_cents}¢: {orders} | ${self.capital:.2f}"
+            orders = self.orders_text(state)
+        return f"{self.status_label()}: {orders} | ${self.capital:.2f}"

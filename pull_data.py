@@ -22,6 +22,7 @@ from pathlib import Path
 DEFAULT_HOST = "root@187.7.17.28"
 DEFAULT_REMOTE_DIR = "~/predictor-sim"
 DEFAULT_FILES = [
+    "*-predict-leader-trades.csv",
     "*-predict-dual-trades.csv",
     "*-predict-fav-trades.csv",
     "*-predict-against-trades.csv",

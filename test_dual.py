@@ -4,7 +4,9 @@ import csv
 import os
 import tempfile
 
+from combo import ComboSim
 from dual import TRADES_HEADER, DualSim, last_capital_after, last_reloaded_total
+from leader import LeaderSim
 from logs import MARKET_CSV_HEADER, format_lowest_cents, log_to_csv
 from predict_feed import best_asks, book_depth, get_current_active_slug, window_bounds
 
@@ -444,11 +446,13 @@ def test_book_and_slugs():
     assert window_bounds(60, at=START + 1800) == (START, START + 3600)
 
 
+def combo_sim(tmp, strategy, **kwargs):
+    return ComboSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default", strategy=strategy,
+                    **kwargs)
+
+
 def regime_sim(tmp, **kwargs):
-    sim = new_sim(tmp, **kwargs)
-    sim.strategy = "regime"
-    sim.fav_max_move_pct = 0
-    return sim
+    return combo_sim(tmp, "regime", fav_max_move_pct=0, **kwargs)
 
 
 def test_regime_decision(tmp):
@@ -497,8 +501,7 @@ def test_regime_favourite_window(tmp):
 
 
 def test_against_strategy(tmp):
-    sim = new_sim(tmp)
-    sim.strategy = "against"
+    sim = combo_sim(tmp, "against")
     three_up = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
                 START - 1200: ["Down", True]}
     sim.history = dict(three_up)
@@ -521,8 +524,7 @@ def test_against_strategy(tmp):
 
 
 def test_combo_strategy(tmp):
-    sim = new_sim(tmp)
-    sim.strategy = "combo"
+    sim = combo_sim(tmp, "combo")
     sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
     assert sim.regime_decision(START, None, 0.01) == ("fav", "streak_2_up")
     assert sim.regime_decision(START, None, -0.019) == ("fav", "streak_2_up")
@@ -550,6 +552,58 @@ def test_regime_history_from_log(tmp):
     loaded.load_history(sim.trades_file)
     assert loaded.history == {START: ["Up", True], START + 300: ["Down", False]}
     assert loaded.regime_decision(START + 600) == ("dual", "dual_in_last_3")
+
+
+# Up's bid (1 - Down ask) first reaches 61¢ at 1:10 in; Up then dips to 51¢ (fills at 52¢), Down to 21¢ (fills at 25¢)
+LEADER_TICKS = [(0, 0.50, 0.51), (30, 0.55, 0.46), (70, 0.62, 0.39), (100, 0.51, 0.50), (200, 0.80, 0.21),
+                (250, 0.85, 0.16)]
+
+
+def leader_sim(tmp):
+    # stop-loss and cancel are on for the dual; the leader strategy ignores them
+    return LeaderSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
+                     stop_loss_seconds=20, stop_loss_live=True)
+
+
+def test_leader_bought_at_ask(tmp):
+    sim = leader_sim(tmp)
+    assert sim.watch_seconds() == (60, 120) and sim.order_cost() == 5.6
+    assert sim.prev_move_skip_reason(0.12) is None and sim.prev_move_skip_reason(-0.10) is None
+    assert sim.prev_move_skip_reason(0.05) == "prev_move_+0.050pct_calm"
+    assert sim.prev_move_skip_reason(None) == "prev_move_unknown"
+    # Up's bid reaches 61¢ at 1:10 in: 8 Up bought at once at its 62¢ ask, held through the dip and to the end
+    state = run_window(sim, LEADER_TICKS)
+    assert state.leader_side == "Up" and state.leader_time_left == 230 and state.placed_time_left == 230
+    assert state.action == "leader" and state.action_reason == "leader_up_at_01:10_in", state.action_reason
+    assert state.fill_type == "only_up" and state.up_fill_price == 0.62 and state.up_taker
+    assert state.up_fill_time_left == 230 and state.contracts("Up") == 8
+    assert state.hedge_order is None and state.cancelled_time_left is None and state.stop_side is None
+    row = sim.settle(state, "Up", 82900.0, 82950.0, 0.02, taker_fee_bps=200)
+    assert row["pnl"] == "2.9408" and row["leader_side"] == "Up" and row["limit_cents"] == "ask<=70", row
+    state = run_window(sim, LEADER_TICKS)
+    assert sim.compute_result(state, "Down", taker_fee_bps=200)[1] == -5.0592
+
+
+def test_leader_skips(tmp):
+    sim = leader_sim(tmp)
+    # Up reached 60¢ before 1:00 in: not a leader; nothing else by 2:00 in
+    state = run_window(sim, [(0, 0.50, 0.51), (30, 0.65, 0.36), (70, 0.66, 0.35), (125, 0.70, 0.31)])
+    assert not state.trading and not state.orders and state.action_reason == "no_leader"
+    assert state.notes == ["no_leader_by_02:00_in", "not_traded"], state.notes
+    assert sim.settle(state, "Down", 1, 2, None)["pnl"] == "0.0000"
+    # Up early, then Down reaches 60¢ inside the watch: Down is the leader
+    state = run_window(sim, [(0, 0.50, 0.51), (30, 0.65, 0.36), (90, 0.38, 0.63)])
+    assert state.leader_side == "Down" and state.leader_time_left == 210 and state.down_fill_price == 0.63
+    # leader's ask over the 70¢ cap (wide spread): skipped
+    state = run_window(sim, [(0, 0.50, 0.51), (80, 0.40, 0.75)])
+    assert state.leader_side == "Down" and not state.trading and not state.orders
+    assert state.action_reason == "leader_down_ask_75c"
+    # calm last window
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    sim.resolve_decision(state, sim.prev_move_skip_reason(0.03))
+    sim.on_tick(START + 70, 0.62, 0.39)
+    assert not state.trading and not state.orders and state.mode == "leader"
+    assert state.action == "skip" and state.action_reason == "prev_move_+0.030pct_calm"
 
 
 def main():
@@ -583,6 +637,8 @@ def main():
             test_against_strategy,
             test_combo_strategy,
             test_regime_history_from_log,
+            test_leader_bought_at_ask,
+            test_leader_skips,
         ):
             test(tempfile.mkdtemp(dir=tmp))
             print(f"✅ {test.__name__}")
