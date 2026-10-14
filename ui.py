@@ -149,7 +149,7 @@ class PlainUI:
     def prev_move_known(self, state, prev_move, skip_message):
         prev_text = color_signed(prev_move, f"{prev_move:+.3f}%") if prev_move is not None else "unknown"
         if skip_message:
-            self._emit(f"⏸️  {skip_message}")
+            self._emit(skip_message)
         elif state.trading:
             self._emit(f"📈 Last window moved {prev_text}: placing both {self.sim.limit_cents}¢ limits.")
         else:
@@ -491,7 +491,13 @@ class Dashboard:
         for line in events:
             parts.append(Text(line, style="dim"))
 
-        skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
+        if sim.strategy == "regime":
+            skip = (f"regime: 2 in a row → favourite ≤{sim.fav_max_cents}¢, dual if one in last "
+                    f"{sim.dual_lookback}, else skip")
+            if state is not None and state.action:
+                skip += f" · now: {state.action}"
+        else:
+            skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
         header = (f"Predict.fun dual · {self.coin.upper()} {self.duration}m · {sim.limit_cents}¢ × {sim.contracts} "
                   f"· {skip}")
         main = Panel(Group(*parts), title=f"[bold]{header}[/bold]", subtitle=datetime.now().strftime("%H:%M:%S"),

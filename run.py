@@ -106,14 +106,40 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     if not state.decision_pending:
         ui.prev_move_known(state, prev_move, None)
         return
+    if sim.strategy == "regime":
+        decide_regime(ui, sim, state, prev_move)
+        return
     reason = sim.prev_move_skip_reason(prev_move)
     sim.resolve_decision(state, reason)
     message = None
     if reason and prev_move is None:
-        message = "Last window's move is unknown (no official prices seen): logging this window without trading."
+        message = "⏸️ Last window's move is unknown (no official prices seen): logging this window without trading."
     elif reason:
-        message = (f"Last window moved {prev_move:+.3f}% (limit {sim.max_prev_move_pct:.2f}%): "
+        message = (f"⏸️ Last window moved {prev_move:+.3f}% (limit {sim.max_prev_move_pct:.2f}%): "
                    f"logging this window without trading.")
+    ui.prev_move_known(state, prev_move, message)
+
+
+def decide_regime(ui, sim, state, prev_move):
+    """Dual, favourite or skip from the recent windows' winners and duals (the regime strategy)."""
+    prev_outcome = None
+    if state.prev_move is not None and prev_move is not None:
+        prev_outcome = "Up" if state.prev_move > 0 else "Down" if state.prev_move < 0 else "Tie"
+    action, reason = sim.regime_decision(state.window_start, prev_outcome)
+    state.action, state.action_reason = action, reason
+    if not state.trading:
+        sim.resolve_decision(state)
+        ui.prev_move_known(state, prev_move, None)
+        return
+    sim.resolve_decision(state, reason if action == "skip" else None, mode="fav" if action == "fav" else "dual")
+    streak = f"streak {state.streak_before}, duals in last {sim.dual_lookback}: {state.recent_duals}"
+    if action == "fav":
+        message = (f"🎯 Favourite window ({streak}): buying {sim.contracts} of the higher-priced side at its ask "
+                   f"if ≤{sim.fav_max_cents}¢, held to the end.")
+    elif action == "dual":
+        message = f"🎯 Dual window ({streak}): placing both {sim.limit_cents}¢ limits."
+    else:
+        message = f"⏸️ Skipping ({reason}; {streak}): logging this window without trading."
     ui.prev_move_known(state, prev_move, message)
 
 
@@ -271,8 +297,16 @@ def parse_args():
     parser.add_argument("--contracts", type=int, default=8, help="Contracts per side (default 8).")
     parser.add_argument("--place-at", type=int, default=None, metavar="SECONDS_LEFT",
                         help="Place both limits when this many seconds are left (default: at window start).")
+    parser.add_argument("--strategy", choices=("regime", "dual"), default=None,
+                        help="regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
+                             "the last --dual-lookback windows was a dual, else skip. dual: the old dual every "
+                             "window with the --max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
+    parser.add_argument("--fav-max", type=int, default=55, metavar="CENTS",
+                        help="Regime: only buy the favourite at this ask or below (default 55).")
+    parser.add_argument("--dual-lookback", type=int, default=3, metavar="WINDOWS",
+                        help="Regime: trade the dual only if one of this many last windows was a dual (default 3).")
     parser.add_argument("--max-prev-move-pct", type=float, default=0.10, metavar="PCT",
-                        help="Skip trading a window when the last one moved this many percent or more "
+                        help="Dual strategy: skip trading a window when the last one moved this many percent or more "
                              "(default 0.10; 0 = off).")
     parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
@@ -316,6 +350,11 @@ def main():
         raise SystemExit("--contracts must be > 0")
     if args.place_at is not None and not 0 < args.place_at <= duration * 60:
         raise SystemExit(f"--place-at must be between 1 and {duration * 60} seconds")
+    strategy = args.strategy or ("regime" if duration == 5 else "dual")
+    if not 1 <= args.fav_max <= 99:
+        raise SystemExit("--fav-max must be between 1 and 99 cents")
+    if args.dual_lookback < 1:
+        raise SystemExit("--dual-lookback must be >= 1")
     if args.max_prev_move_pct < 0:
         raise SystemExit("--max-prev-move-pct must be >= 0")
     if args.hedge_at and not args.limit < args.hedge_at < 100:
@@ -339,7 +378,9 @@ def main():
                   stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,
                   stop_loss_min_cents=args.stop_loss_min,
                   reload_to=args.capital if args.reload_to is None else args.reload_to,
-                  reloaded_total=last_reloaded_total(trades_file))
+                  reloaded_total=last_reloaded_total(trades_file), strategy=strategy, fav_max_cents=args.fav_max,
+                  dual_lookback=args.dual_lookback)
+    sim.load_history(trades_file)
     print(f"⚙️  Predict.fun dual | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
     print(sim.summarize())
     print(f"📁 updown={updown_file} | trades={trades_file}")

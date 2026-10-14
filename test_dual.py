@@ -441,6 +441,64 @@ def test_book_and_slugs():
     assert window_bounds(60, at=START + 1800) == (START, START + 3600)
 
 
+def regime_sim(tmp, **kwargs):
+    sim = new_sim(tmp, **kwargs)
+    sim.strategy = "regime"
+    return sim
+
+
+def test_regime_decision(tmp):
+    sim = regime_sim(tmp)
+    assert sim.regime_decision(START) == ("skip", "streak_unknown")
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
+    assert sim.regime_decision(START) == ("fav", "streak_2_up")
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", False],
+                   START - 1200: ["Down", True]}
+    assert sim.regime_decision(START) == ("skip", "no_dual_in_last_3")
+    sim.history = {START - 300: ["Down", False], START - 600: ["Up", True]}
+    assert sim.regime_decision(START) == ("dual", "dual_in_last_3")
+    sim.history = {START - 300: ["Down", False], START - 600: ["Up", False]}
+    assert sim.regime_decision(START) == ("skip", "recent_duals_unknown")
+    # the last window's winner comes from its official prices before it settles
+    sim.history = {START - 300: [None, False], START - 600: ["Up", True], START - 900: ["Down", False]}
+    sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, "Up") == ("fav", "streak_2_up")
+    assert sim.current.streak_before == "2 Up" and sim.current.recent_duals == "1/3"
+
+
+def test_regime_favourite_window(tmp):
+    sim = regime_sim(tmp, stop_loss_seconds=20)
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    state.action, state.action_reason = "fav", "streak_2_up"
+    sim.resolve_decision(state, None, mode="fav")
+    for offset, up, down in ((1, 0.47, 0.54), (60, 0.30, 0.71), (290, 0.96, 0.05)):
+        sim.on_tick(START + offset, up, down)
+    state = sim.finish_window()
+    assert state.fill_type == "only_down" and state.contracts("Down") == 8 and state.down_taker
+    assert state.stop_side is None and not state.would_stop
+    row = sim.settle(state, "Down", 1, 2, None, taker_fee_bps=200)
+    assert row["pnl"] == "3.5936" and row["action"] == "fav" and row["down_avg_cents"] == "54.0"
+    assert sim.history[START] == ["Down", True]
+
+    state = sim.start_window(START + 300, END + 300, "s", "1", now=START + 300, decision_pending=True)
+    sim.resolve_decision(state, None, mode="fav")
+    sim.on_tick(START + 301, 0.40, 0.58)
+    assert not state.trading and "fav_down_58c_over_55c" in state.notes and not state.orders
+
+
+def test_regime_history_from_log(tmp):
+    sim = regime_sim(tmp)
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.28, 0.73), (200, 0.73, 0.28)])
+    assert sim.history[START] == [None, True]
+    sim.settle(state, "Up", 1, 2, None)
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.45, 0.56)], start=START + 300, end=END + 300)
+    sim.settle(state, "Down", 1, 2, None)
+    loaded = regime_sim(tmp)
+    loaded.load_history(sim.trades_file)
+    assert loaded.history == {START: ["Up", True], START + 300: ["Down", False]}
+    assert loaded.regime_decision(START + 600) == ("dual", "dual_in_last_3")
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         for test in (
@@ -467,6 +525,9 @@ def main():
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,
+            test_regime_decision,
+            test_regime_favourite_window,
+            test_regime_history_from_log,
         ):
             test(tempfile.mkdtemp(dir=tmp))
             print(f"✅ {test.__name__}")

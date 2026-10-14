@@ -55,6 +55,51 @@ Needs the `*_rise_*` / `*_min_bid_after_*` columns logged from 13 Oct evening.
 
 The two strategies complement each other: streak → favourite, calm and no streak → dual, big move and no streak → neither.
 
+## Strategy 3 (candidate, added 14 Oct): Dual only in tight windows, entered early
+
+Place the dual only in windows where BTC stays close to the price to beat, decided within the first
+10–20 seconds. **Tight** = BTC ends within 0.02% of the price to beat (0.05% at most).
+
+Why: how far BTC ends from the price to beat is the strongest pattern found. Windows that end far away
+almost always end one-sided losing, because the only order that fills is on the side being left behind.
+
+Evidence (every window, 30¢ × 8 replay from each side's lowest price, no stop-loss, 12–14 Oct):
+
+```
+5m   this window's end move   windows   duals   one-sided lost   P&L
+     under 0.02%                110      69%        29%         +$177.60
+     0.02–0.05%                  99      39%        61%          −$19.20
+     0.05–0.10%                 143      31%        69%          −$96.80
+     over 0.10%                 135      19%        81%         −$184.00
+15m  under 0.05%                 41      51%        49%          +$19.20
+     0.05% or more              126      33%        67%          −$67.20
+```
+
+Timing matters: if a 5m window will end within 0.02% and we only become sure of it at time T, entering at T
+still gets both fills in:
+
+```
+     10s in   64%   +$99        60s in   41%   +$56
+     20s in   62%   +$96        90s in   29%   +$37
+     30s in   54%   +$67        2 min    22%   +$34      3 min   7%   −$5
+     (open: 67%, +$100; 69 windows)
+```
+
+So the decision has to come within about 20 seconds of the open, or most duals are already gone.
+
+What does NOT pick out tight windows (tested 14 Oct): the last window's move, the average of the last 3–4
+windows, "last 3 all calm", and time of day. They help avoid the worst windows (after big moves), nothing more.
+Waiting with an order-book check (no side ≤40¢ yet) also failed: the price is too jumpy to stand in for BTC.
+
+To test after the week (needs the logging added 14 Oct: `up/down_ask_{10..120}s_in`,
+`btc_move_pct_{10..120}s_in`, `btc_up_0.05pct_time_left`, `btc_down_0.05pct_time_left`):
+
+1. **Early check**: if BTC is within X% (try 0.01–0.03%) at 10s / 20s in, how often does the window end
+   tight, and does placing the dual then make money?
+2. **Breakout cancel**: place at the open, cancel any unfilled order the moment BTC first gets 0.05% away.
+   Compare saved one-sided losses against duals lost (windows that cross 0.05% and come back).
+3. **Combined**: early check + breakout cancel + the existing stop-loss.
+
 ## When "implement PIL" is said
 
 1. **Recheck first** on the week's logs: rerun both tables. The best groups are only 22–49 windows, and
