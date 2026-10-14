@@ -361,6 +361,23 @@ def test_open_and_end_asks(tmp):
     assert row["up_ask_10s_left"] == 97 and row["down_ask_10s_left"] == ""
 
 
+def test_snapshots_into_window(tmp):
+    sim = new_sim(tmp)
+    sim.start_window(START, END, "s", "1", now=START)
+    ptb = 100000.0
+    for off, u, d, btc in [(0, 0.50, 0.51, 100000.0), (11, 0.51, 0.50, 100005.0), (29, 0.52, 0.49, 100010.0),
+                           (31, 0.58, 0.43, 100020.0), (35, 0.10, 0.91, 99000.0), (62, 0.66, 0.35, 100050.0),
+                           (200, 0.70, 0.31, 0.0)]:
+        sim.on_tick(START + off, u, d, btc, ptb)
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["up_ask_10s_in"] == 51 and row["btc_move_pct_10s_in"] == "+0.0050"
+    assert row["up_ask_30s_in"] == 58 and row["down_ask_30s_in"] == 43 and row["btc_move_pct_30s_in"] == "+0.0200"
+    assert row["up_ask_60s_in"] == 66 and row["btc_move_pct_60s_in"] == "+0.0500"
+    # no tick within 5s after 20s, 40s, 50s, 90s...: left blank rather than filled with a late price
+    assert row["up_ask_20s_in"] == "" and row["up_ask_40s_in"] == "" and row["up_ask_50s_in"] == ""
+    assert row["up_ask_90s_in"] == "" and row["btc_move_pct_120s_in"] == ""
+
+
 def test_tie(tmp):
     sim = new_sim(tmp)
     state = run_window(sim, [(0, 0.29, 0.29)])
@@ -440,6 +457,7 @@ def main():
             test_rise_then_fall,
             test_book_averages,
             test_open_and_end_asks,
+            test_snapshots_into_window,
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,

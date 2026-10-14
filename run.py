@@ -237,7 +237,9 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
             return ws.latest_price() or price_to_beat
 
         up_ask, down_ask = ws.asks(market_id)
-        sim.on_tick(now, up_ask, down_ask)
+        ptb = ws.official_prices(market_id)[0] or ws.first_price_from(window_start) or price_to_beat
+        btc = ws.latest_price()
+        sim.on_tick(now, up_ask, down_ask, btc or 0.0, ptb or 0.0)
         if state.depth_start is None and up_ask > 0 and down_ask > 0:
             state.depth_start = ws.depth(market_id)
         if state.depth_first_fill is None and state.fill_type != "none":
@@ -256,8 +258,7 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
             "book_age": ws.book_age(market_id),
             "next_ready": ws.next_ready(),
         }
-        ptb = ws.official_prices(market_id)[0] or ws.first_price_from(window_start) or price_to_beat
-        ui.tick(state, up_ask, down_ask, ptb, ws.latest_price(), socket_info)
+        ui.tick(state, up_ask, down_ask, ptb, btc, socket_info)
         time.sleep(TICK_SECONDS)
 
 
