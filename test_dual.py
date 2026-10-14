@@ -376,6 +376,12 @@ def test_snapshots_into_window(tmp):
     # no tick within 5s after 20s, 40s, 50s, 90s...: left blank rather than filled with a late price
     assert row["up_ask_20s_in"] == "" and row["up_ask_40s_in"] == "" and row["up_ask_50s_in"] == ""
     assert row["up_ask_90s_in"] == "" and row["btc_move_pct_120s_in"] == ""
+    # BTC went 1% below the price to beat at 35s in (265s left), then 0.05% above at 62s in (238s left)
+    assert row["btc_down_0.05pct_time_left"] == 265 and row["btc_up_0.05pct_time_left"] == 238
+    sim.start_window(START + 300, END + 300, "s", "2", now=START + 300)
+    sim.on_tick(START + 310, 0.5, 0.51, 100040.0, ptb)
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["btc_up_0.05pct_time_left"] == "" and row["btc_down_0.05pct_time_left"] == ""
 
 
 def test_tie(tmp):

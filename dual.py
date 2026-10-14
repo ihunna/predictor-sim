@@ -21,6 +21,7 @@ STOP_CHECK_SECONDS = (60, 50, 40, 30, 20)
 END_SAMPLE_SECONDS = 10
 SNAPSHOT_SECONDS = (10, 20, 30, 40, 50, 60, 90, 120)  # seconds into the window
 SNAPSHOT_LATE_SECONDS = 5  # a snapshot is skipped if no tick came within this long after its time
+BTC_MOVE_LEVEL_PCT = 0.05
 
 TRADES_HEADER = [
     "window_start",
@@ -45,6 +46,8 @@ TRADES_HEADER = [
         for seconds in SNAPSHOT_SECONDS
         for name in (f"up_ask_{seconds}s_in", f"down_ask_{seconds}s_in", f"btc_move_pct_{seconds}s_in")
     ],
+    f"btc_up_{BTC_MOVE_LEVEL_PCT}pct_time_left",
+    f"btc_down_{BTC_MOVE_LEVEL_PCT}pct_time_left",
     "placed_time_left",
     "up_ask_at_place",
     "down_ask_at_place",
@@ -339,6 +342,9 @@ class WindowState:
     asks_end: tuple | None = None  # (up, down) at the first tick with END_SAMPLE_SECONDS or less left
     # seconds into the window -> (up ask, down ask, BTC's % move from the price to beat or None)
     snapshots: dict = field(default_factory=dict)
+    # time left when BTC was first BTC_MOVE_LEVEL_PCT or more above / below the price to beat
+    btc_up_level_time_left: float | None = None
+    btc_down_level_time_left: float | None = None
     cheap_up: dict = field(default_factory=cheap_watches)
     cheap_down: dict = field(default_factory=cheap_watches)
     rise_up: dict = field(default_factory=rise_watches)
@@ -547,10 +553,14 @@ class DualSim:
             return
         remaining = max(0.0, state.window_end - now)
         elapsed = now - state.window_start
+        move = (btc - ptb) / ptb * 100 if btc > 0 and ptb > 0 else None
         for seconds in SNAPSHOT_SECONDS:
             if seconds not in state.snapshots and seconds <= elapsed <= seconds + SNAPSHOT_LATE_SECONDS:
-                move = (btc - ptb) / ptb * 100 if btc > 0 and ptb > 0 else None
                 state.snapshots[seconds] = (up_ask, down_ask, move)
+        if move is not None and move >= BTC_MOVE_LEVEL_PCT and state.btc_up_level_time_left is None:
+            state.btc_up_level_time_left = remaining
+        if move is not None and move <= -BTC_MOVE_LEVEL_PCT and state.btc_down_level_time_left is None:
+            state.btc_down_level_time_left = remaining
 
         if 0.0 < up_ask <= 1.0 and up_ask < state.lowest_up:
             state.lowest_up = up_ask
@@ -810,6 +820,8 @@ class DualSim:
                 "up_ask_10s_left": _cents(state.asks_end[0]) if state.asks_end else "",
                 "down_ask_10s_left": _cents(state.asks_end[1]) if state.asks_end else "",
                 **_snapshot_columns(state.snapshots),
+                f"btc_up_{BTC_MOVE_LEVEL_PCT}pct_time_left": _secs(state.btc_up_level_time_left),
+                f"btc_down_{BTC_MOVE_LEVEL_PCT}pct_time_left": _secs(state.btc_down_level_time_left),
                 "placed_time_left": _secs(state.placed_time_left),
                 "up_ask_at_place": _cents(state.up_ask_at_place),
                 "down_ask_at_place": _cents(state.down_ask_at_place),
