@@ -386,12 +386,11 @@ def main():
     if not 0 <= args.cancel_left_pct < 100:
         raise SystemExit("--cancel-left-pct must be between 0 and 100")
 
+    updown_file = f"{coin}-{duration}-updown.csv"
     dual_trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
     if strategy in ("fav", "against", "combo"):
-        updown_file = f"{coin}-{duration}-{strategy}-updown.csv"
         trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
     else:
-        updown_file = f"{coin}-{duration}-updown.csv"
         trades_file = dual_trades_file
     if args.capital_last is not None:
         if args.capital_last <= 0:

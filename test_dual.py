@@ -409,6 +409,9 @@ def test_log_formats_and_capital_restore(tmp):
         rows = list(csv.reader(f))
     assert rows[0] == MARKET_CSV_HEADER
     assert rows[1] == [str(START), "$82900.12", "$82850.00", "29¢", "N/A", "Down"], rows[1]
+    log_to_csv(updown, START, 82900.123, 82850.0, "30¢", "N/A", "Down")  # a second bot, same window
+    with open(updown, newline="", encoding="utf-8") as f:
+        assert len(list(csv.reader(f))) == 2
 
 
 def test_old_log_upgraded_in_place(tmp):

@@ -90,8 +90,13 @@ def update_window_progress(duration, window_start, window_end, formatted_message
 
 
 def log_to_csv(filename, timestamp, price_to_beat, final_price, lowest_up, lowest_down, outcome):
-    """Appends one window's result to the updown file."""
+    """Appends one window's result to the updown file, unless that window is already in it (several bots of the
+    same coin and duration share the file)."""
     file_exists = os.path.isfile(filename)
+    if file_exists:
+        with open(filename, newline="", encoding="utf-8") as f:
+            if any(row and row[0] == str(timestamp) for row in csv.reader(f)):
+                return
     with open(filename, mode="a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
