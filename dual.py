@@ -38,6 +38,10 @@ TRADES_HEADER = [
     "action_reason",
     "streak_before",
     "recent_duals",
+    "avg_move_pct",
+    "move_vs_avg",
+    "rsi_14",
+    "structure",
     "leader_side",
     "leader_time_left",
     "limit_cents",
@@ -388,6 +392,10 @@ class WindowState:
     action_reason: str = ""
     streak_before: str = ""  # e.g. "2 Up": same winner in a row up to the last window
     recent_duals: str = ""  # e.g. "1/3": dual windows among the last few
+    avg_move_pct: float | None = None  # average size of the recent window moves
+    move_vs_avg: float | None = None  # last window's move size / avg_move_pct
+    rsi: float | None = None  # 0-100 over the recent window moves (100 = all up)
+    structure: str = ""  # "up" (higher highs and lows), "down" or "mixed", before the streak
     cancelled_time_left: float | None = None
     prev_move: float | None = None
     maker_fee_bps: int = 0
@@ -871,6 +879,10 @@ class DualSim:
                 "action_reason": state.action_reason,
                 "streak_before": state.streak_before,
                 "recent_duals": state.recent_duals,
+                "avg_move_pct": f"{state.avg_move_pct:.4f}" if state.avg_move_pct is not None else "",
+                "move_vs_avg": f"{state.move_vs_avg:.2f}" if state.move_vs_avg is not None else "",
+                "rsi_14": f"{state.rsi:.1f}" if state.rsi is not None else "",
+                "structure": state.structure,
                 "leader_side": state.leader_side or "",
                 "leader_time_left": _secs(state.leader_time_left),
                 "limit_cents": self.limit_text(),

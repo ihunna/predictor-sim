@@ -358,6 +358,11 @@ def parse_args():
                              "the combo move defaults below scale the same way).")
     parser.add_argument("--against-max", type=int, default=99, metavar="CENTS",
                         help="Against and continue: only buy at this ask or below (default 99 = no cap).")
+    parser.add_argument("--move-vs-avg", type=float, default=1.0, metavar="TIMES",
+                        help="Against: bet only when the last window's move is at least this many times the average "
+                             "move of the last --avg-windows windows (default 1; 0 = off).")
+    parser.add_argument("--avg-windows", type=int, default=24, metavar="WINDOWS",
+                        help="Against: windows for the average move and the structure (default 24).")
     parser.add_argument("--take-profit-at", type=int, default=85, metavar="CENTS",
                         help="Against: sell the whole position at this price (resting limit) on streaks that go "
                              "with the trend (default 85; 0 = no take-profit at all).")
@@ -444,6 +449,8 @@ def main():
         raise SystemExit("--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
     if args.continue_max_move < 0:
         raise SystemExit("--continue-max-move must be >= 0")
+    if args.move_vs_avg < 0 or args.avg_windows < 10:
+        raise SystemExit("--move-vs-avg must be >= 0, --avg-windows >= 10")
     if args.trend_windows < 0 or args.trend_against_min_move < 0 or not 0 <= args.take_profit_at <= 99:
         raise SystemExit("--trend-windows and --trend-against-min-move must be >= 0, --take-profit-at 0-99")
     if args.max_prev_move_pct < 0:
@@ -492,7 +499,8 @@ def main():
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
                          trend_windows=args.trend_windows, take_profit_cents=args.take_profit_at,
-                         take_profit_all=args.take_profit_all)
+                         take_profit_all=args.take_profit_all, min_move_vs_avg=args.move_vs_avg,
+                         avg_windows=args.avg_windows)
     else:
         sim = ComboSim(*sim_args, **common, strategy=strategy, fav_max_cents=args.fav_max,
                        dual_lookback=args.dual_lookback, against_min_streak=args.against_min_streak,

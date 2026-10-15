@@ -525,7 +525,28 @@ def test_against_strategy(tmp):
 
 
 def against_sim(tmp, **kwargs):
+    kwargs.setdefault("min_move_vs_avg", 0)
     return AgainstSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default", **kwargs)
+
+
+def test_against_move_vs_average(tmp):
+    sim = against_sim(tmp, trend_windows=0, min_move_vs_avg=1.0, avg_windows=12, rsi_windows=4)
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
+                   START - 1200: ["Down", True]}
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, None, 0.05) == ("skip", "streak_3_up_move_+0.050pct_avg_move_unknown")
+    # 12 windows: a climb (higher highs and lows) before the 3-window streak; average move 0.05%
+    sim.moves = {START - i * 300: m for i, m in zip(range(12, 0, -1),
+                 [-0.05, 0.05, -0.05, 0.05, 0.05, 0.05, -0.05, 0.05, 0.05, 0.05, 0.05, 0.05])}
+    assert sim.regime_decision(START, None, 0.05) == ("against", "streak_3_up_move_+0.050pct_1.00x_avg")
+    assert round(state.avg_move_pct, 6) == 0.05 and round(state.move_vs_avg, 6) == 1.0 and state.structure == "up"
+    assert round(state.rsi, 6) == 100.0
+    sim.moves[START - 300] = 0.02  # last move now under the average
+    assert sim.regime_decision(START, None, None)[0] == "skip"
+    assert sim.regime_decision(START, None, 0.02) == ("skip", "streak_3_up_move_+0.020pct_0.42x_avg")
+    assert round(state.rsi, 6) == 100.0 and round(state.move_vs_avg, 2) == 0.42
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["move_vs_avg"] == "0.42" and row["structure"] == "up" and row["rsi_14"] == "100.0"
 
 
 def test_against_exactly_three_and_take_profit(tmp):
@@ -780,6 +801,7 @@ def main():
             test_against_strategy,
             test_against_exactly_three_and_take_profit,
             test_against_trend_take_profit,
+            test_against_move_vs_average,
             test_combo_strategy,
             test_combo_continue,
             test_combo_trend,

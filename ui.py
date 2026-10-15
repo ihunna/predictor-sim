@@ -521,8 +521,9 @@ class Dashboard:
             tp = ("no take-profit" if sim.take_profit_cents <= 0
                   else f"take-profit {sim.take_profit_cents}¢ on every bet" if sim.take_profit_all
                   else f"with the trend → take-profit {sim.take_profit_cents}¢")
-            skip = (f"against: exactly {sim.against_min_streak} in a row & last move ≥{sim.against_min_move_pct:.2f}% "
-                    f"→ other side ≤{sim.against_max_cents}¢, once per streak · {tp}, else skip")
+            vs_avg = f" & ≥{sim.min_move_vs_avg:g}x avg move" if sim.min_move_vs_avg > 0 else ""
+            skip = (f"against: exactly {sim.against_min_streak} in a row & last move ≥{sim.against_min_move_pct:.2f}%"
+                    f"{vs_avg} → other side ≤{sim.against_max_cents}¢, once per streak · {tp}, else skip")
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "fav":
