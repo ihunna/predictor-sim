@@ -18,7 +18,7 @@ from datetime import datetime
 from logs import format_time
 
 CHEAP_LEVELS = (40, 30, 20, 15, 10, 5)
-RISE_LEVELS = (60, 65, 70, 75)
+RISE_LEVELS = (60, 65, 70, 75, 80, 85, 90, 95)
 STOP_CHECK_SECONDS = (60, 50, 40, 30, 20)
 END_SAMPLE_SECONDS = 10
 SNAPSHOT_SECONDS = (10, 20, 30, 40, 50, 60, 90, 120)  # seconds into the window
