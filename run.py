@@ -39,6 +39,7 @@ socket.getaddrinfo = _ipv4_only_getaddrinfo
 NEXT_WINDOW_SUBSCRIBE_SECONDS = 60
 TICK_SECONDS = 0.2
 OFFICIAL_PRICE_WAIT_SECONDS = 10
+LEADER_MIN_PREV_MOVE_PCT = {5: 0.10, 15: 0.15, 60: 0.35}  # about the biggest 30% of window moves
 RESOLUTION_CHECK_ATTEMPTS = 4
 RESOLUTION_CHECK_POLL_SECONDS = 15
 EARLY_VOLUME_PCT = 20
@@ -319,9 +320,10 @@ def parse_args():
                              "(default 60).")
     parser.add_argument("--leader-max", type=int, default=70, metavar="CENTS",
                         help="Leader: buy the leader at its ask only up to this price (default 70).")
-    parser.add_argument("--min-prev-move-pct", type=float, default=0.10, metavar="PCT",
+    parser.add_argument("--min-prev-move-pct", type=float, default=None, metavar="PCT",
                         help="Leader: trade only when the last window moved this many percent or more "
-                             "(default 0.10; 0 = any move).")
+                             "(default by window: 5m 0.10, 15m 0.15, 60m 0.35 - about the biggest 30%% of moves; "
+                             "0 = any move).")
     parser.add_argument("--watch-from-pct", type=float, default=20.0,
                         help="Leader: start of the watch period, in percent of the window (default 20: 1:00 into 5m).")
     parser.add_argument("--watch-to-pct", type=float, default=40.0,
@@ -413,6 +415,8 @@ def main():
     dual_trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
     if not 1 <= args.leader_at <= args.leader_max <= 99:
         raise SystemExit("--leader-at and --leader-max must be between 1 and 99 cents, --leader-max >= --leader-at")
+    if args.min_prev_move_pct is None:
+        args.min_prev_move_pct = LEADER_MIN_PREV_MOVE_PCT[duration]
     if args.min_prev_move_pct < 0:
         raise SystemExit("--min-prev-move-pct must be >= 0")
     if not 0 <= args.watch_from_pct < args.watch_to_pct < 100:
