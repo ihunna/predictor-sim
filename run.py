@@ -40,6 +40,10 @@ NEXT_WINDOW_SUBSCRIBE_SECONDS = 60
 TICK_SECONDS = 0.2
 OFFICIAL_PRICE_WAIT_SECONDS = 10
 LEADER_MIN_PREV_MOVE_PCT = {5: 0.10, 15: 0.15, 60: 0.35}  # about the biggest 30% of window moves
+# combo / against / fav move thresholds are set on 5m and scaled by how much bigger longer windows move
+STREAK_MOVE_PCT_5M = {"against_min_move": 0.02, "continue_max_move": 0.05, "fav_max_move": 0.02,
+                      "trend_against_min_move": 0.05, "trend_against_max_move": 0.10, "trend_continue_max_move": 0.02}
+MOVE_SCALE = {5: 1.0, 15: 1.5, 60: 3.5}
 RESOLUTION_CHECK_ATTEMPTS = 4
 RESOLUTION_CHECK_POLL_SECONDS = 15
 EARLY_VOLUME_PCT = 20
@@ -142,7 +146,7 @@ def decide_regime(ui, sim, state, prev_move):
         ui.prev_move_known(state, prev_move, None)
         return
     sim.resolve_decision(state, reason if action == "skip" else None,
-                         mode=action if action in ("fav", "against") else "dual")
+                         mode=action if action in ("fav", "against", "continue") else "dual")
     if sim.strategy in ("against", "combo"):
         moved = f"{prev_move:+.3f}%" if prev_move is not None else "unknown"
         streak = f"streak {state.streak_before}, last window moved {moved}"
@@ -151,6 +155,9 @@ def decide_regime(ui, sim, state, prev_move):
     if action == "against":
         message = (f"🎯 Against-the-streak window ({streak}): buying {sim.contracts} {state.bet_side} at its ask "
                    f"if ≤{sim.against_max_cents}¢, held to the end.")
+    elif action == "continue":
+        message = (f"🎯 Streak-continues window ({streak}, slowing): buying {sim.contracts} {state.bet_side} at its "
+                   f"ask if ≤{sim.against_max_cents}¢, held to the end.")
     elif action == "fav":
         message = (f"🎯 Favourite window ({streak}): buying {sim.contracts} of the higher-priced side at its ask "
                    f"if ≤{sim.fav_max_cents}¢, held to the end.")
@@ -339,13 +346,32 @@ def parse_args():
                              "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
     parser.add_argument("--against-min-streak", type=int, default=3, metavar="WINDOWS",
                         help="Against: bet only after this many same winners in a row or more (default 3).")
-    parser.add_argument("--against-min-move", type=float, default=0.02, metavar="PCT",
-                        help="Against: bet only when the last window moved this many percent or more (default 0.02).")
+    parser.add_argument("--against-min-move", type=float, default=None, metavar="PCT",
+                        help="Against: bet only when the last window moved this many percent or more (default 0.02 "
+                             "on 5m, 0.03 on 15m, 0.07 on 60m). All the move defaults below scale the same way.")
     parser.add_argument("--against-max", type=int, default=99, metavar="CENTS",
-                        help="Against: only buy at this ask or below (default 99 = no cap).")
-    parser.add_argument("--fav-max-move", type=float, default=0.02, metavar="PCT",
+                        help="Against and continue: only buy at this ask or below (default 99 = no cap).")
+    parser.add_argument("--continue-max-move", type=float, default=None, metavar="PCT",
+                        help="Combo: after --against-min-streak+ in a row, buy the streak's side when the last window "
+                             "moved less than this many percent and less than the window before (default 0.05 on 5m; "
+                             "0 = off).")
+    parser.add_argument("--trend-windows", type=int, default=None, metavar="WINDOWS",
+                        help="Combo: the trending side is the one with more 3+ streaks in this many windows before "
+                             "the streak (default 8h: 96 on 5m, 32 on 15m; 24 on 60m; 0 = off). With a trend, the "
+                             "other side's streak is "
+                             "bet against at --trend-against-min-move%%+; the trending side's streak is bet to "
+                             "continue under --trend-continue-max-move%% and against between --trend-against-min-move "
+                             "and --trend-against-max-move%%; else skip. No trend: the --against-min-move and "
+                             "--continue-max-move rules.")
+    parser.add_argument("--trend-against-min-move", type=float, default=None, metavar="PCT",
+                        help="(default 0.05 on 5m)")
+    parser.add_argument("--trend-against-max-move", type=float, default=None, metavar="PCT",
+                        help="(default 0.10 on 5m)")
+    parser.add_argument("--trend-continue-max-move", type=float, default=None, metavar="PCT",
+                        help="(default 0.02 on 5m)")
+    parser.add_argument("--fav-max-move", type=float, default=None, metavar="PCT",
                         help="Only take the favourite bet when the last window moved less than this many percent "
-                             "(default 0.02; 0 = any move).")
+                             "(default 0.02 on 5m; 0 = any move).")
     parser.add_argument("--fav-max", type=int, default=55, metavar="CENTS",
                         help="Regime: only buy the favourite at this ask or below (default 55).")
     parser.add_argument("--dual-lookback", type=int, default=3, metavar="WINDOWS",
@@ -400,8 +426,20 @@ def main():
         raise SystemExit("--fav-max must be between 1 and 99 cents")
     if args.dual_lookback < 1:
         raise SystemExit("--dual-lookback must be >= 1")
+    scale = MOVE_SCALE.get(duration, (duration / 5) ** 0.5)
+    for name, pct in STREAK_MOVE_PCT_5M.items():
+        if getattr(args, name) is None:
+            setattr(args, name, round(pct * scale, 3))
+    if args.trend_windows is None:
+        args.trend_windows = max(24, 480 // duration)
     if args.against_min_streak < 1 or args.against_min_move < 0 or not 1 <= args.against_max <= 99:
         raise SystemExit("--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
+    if args.continue_max_move < 0:
+        raise SystemExit("--continue-max-move must be >= 0")
+    if (args.trend_windows < 0 or min(args.trend_against_min_move, args.trend_continue_max_move) < 0
+            or args.trend_against_max_move <= args.trend_against_min_move):
+        raise SystemExit("--trend-windows and the --trend-* moves must be >= 0, "
+                         "--trend-against-max-move above --trend-against-min-move")
     if args.max_prev_move_pct < 0:
         raise SystemExit("--max-prev-move-pct must be >= 0")
     if args.hedge_at and not args.limit < args.hedge_at < 100:
@@ -448,7 +486,10 @@ def main():
         sim = ComboSim(*sim_args, **common, strategy=strategy, fav_max_cents=args.fav_max,
                        dual_lookback=args.dual_lookback, against_min_streak=args.against_min_streak,
                        against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
-                       fav_max_move_pct=args.fav_max_move)
+                       fav_max_move_pct=args.fav_max_move, continue_max_move_pct=args.continue_max_move,
+                       trend_windows=args.trend_windows, trend_against_min_move_pct=args.trend_against_min_move,
+                       trend_against_max_move_pct=args.trend_against_max_move,
+                       trend_continue_max_move_pct=args.trend_continue_max_move)
         if trades_file != dual_trades_file:
             sim.load_history(dual_trades_file)
         sim.load_history(trades_file)

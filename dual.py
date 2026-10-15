@@ -371,11 +371,11 @@ class WindowState:
     volume_early_time_left: float | None = None
     trading: bool = True
     decision_pending: bool = False
-    mode: str = "dual"  # "dual" (both limits), "fav" (buy the favourite at its ask), "against" (buy bet_side), "leader"
+    mode: str = "dual"  # "dual" (both limits), "fav" (buy the favourite), "against"/"continue" (buy bet_side), "leader"
     leader_side: str | None = None
     leader_time_left: float | None = None
     reached_early: set = field(default_factory=set)  # sides whose bid reached the leader level before the watch
-    bet_side: str | None = None  # side bought in "against" mode
+    bet_side: str | None = None  # side bought in "against" and "continue" modes
     action: str = ""  # strategy decision: dual, fav or skip
     action_reason: str = ""
     streak_before: str = ""  # e.g. "2 Up": same winner in a row up to the last window

@@ -3,7 +3,8 @@
 regime: exactly 2 same winners in a row -> buy the favourite (the side with the higher ask) at its ask and hold;
 else the dual if one of the last few windows was a dual (both sides reached the limit); else skip.
 fav: only the favourite bets, never a dual. against: only buy the side against a streak of 3+ when the last window
-moved enough. combo: fav and against together."""
+moved enough. combo: fav and against together, plus continue: after 3+ in a row, when the last window moved under
+continue_max_move_pct and less than the window before it (the streak is slowing), buy the streak's side."""
 import csv
 import os
 
@@ -14,7 +15,9 @@ STRATEGIES = ("regime", "fav", "against", "combo")
 
 class ComboSim(DualSim):
     def __init__(self, *args, strategy="combo", fav_max_cents=55, dual_lookback=3, against_min_streak=3,
-                 against_min_move_pct=0.02, against_max_cents=99, fav_max_move_pct=0.02, **kwargs):
+                 against_min_move_pct=0.02, against_max_cents=99, fav_max_move_pct=0.02, continue_max_move_pct=0.05,
+                 trend_windows=96, trend_against_min_move_pct=0.05, trend_against_max_move_pct=0.10,
+                 trend_continue_max_move_pct=0.02, **kwargs):
         super().__init__(*args, **kwargs)
         if strategy not in STRATEGIES:
             raise ValueError(f"unknown strategy {strategy!r}")
@@ -23,9 +26,15 @@ class ComboSim(DualSim):
         self.against_min_streak = against_min_streak
         self.against_min_move_pct = against_min_move_pct
         self.against_max_cents = against_max_cents
+        self.continue_max_move_pct = continue_max_move_pct
+        self.trend_windows = trend_windows
+        self.trend_against_min_move_pct = trend_against_min_move_pct
+        self.trend_against_max_move_pct = trend_against_max_move_pct
+        self.trend_continue_max_move_pct = trend_continue_max_move_pct
         self.fav_max_cents = fav_max_cents
         self.dual_lookback = dual_lookback
         self.history = {}  # window_start -> [outcome or None, dual (both sides reached the limit) or None]
+        self.moves = {}  # window_start -> BTC move in %
 
     def summarize(self):
         capital = f"capital ${self.capital:.2f} ({self.capital_source})"
@@ -34,7 +43,7 @@ class ComboSim(DualSim):
                 f"🎯 Favourite + against: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
                 f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}); after {self.against_min_streak}+ in a row, when "
                 f"the last window moved {self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
-                f"(≤{self.against_max_cents}¢); held to the end; else skip | {capital}"
+                f"(≤{self.against_max_cents}¢){self._continue_text()}; held to the end; else skip | {capital}"
             )
         if self.strategy == "against":
             return (
@@ -53,6 +62,42 @@ class ComboSim(DualSim):
             f"{self.contracts} if one of the last {self.dual_lookback} windows was a dual; else skip | dual windows: "
             f"{self.dual_rules_text()} | {capital}"
         )
+
+    def _continue_text(self):
+        text = ""
+        if self.continue_max_move_pct > 0:
+            text = (f"; but when the last move was under {self.continue_max_move_pct:.2f}% and smaller than the one "
+                    f"before, buy the streak's side instead")
+        if self.trend_windows > 0:
+            text += (f"; with a trend (the side with more 3+ streaks in the last {self.trend_windows} windows): the "
+                     f"other side's streak → against at {self.trend_against_min_move_pct:.2f}%+, the trending side's "
+                     f"streak → continue under {self.trend_continue_max_move_pct:.2f}%, against at "
+                     f"{self.trend_against_min_move_pct:.2f}-{self.trend_against_max_move_pct:.2f}%, else skip; the "
+                     f"rules above only when there is no trend")
+        return text
+
+    def trend_before(self, streak_start):
+        """(trending side or None for a tie, up streaks, down streaks) from the ``trend_windows`` windows before
+        ``streak_start``, counting 3+ runs of the same winner (an unknown window ends a run); None when more than
+        a tenth of those windows are not known."""
+        step = self.duration * 60
+        outcomes = []
+        for i in range(self.trend_windows, 0, -1):
+            entry = self.history.get(streak_start - i * step)
+            outcomes.append(entry[0] if entry else None)
+        if outcomes.count(None) > self.trend_windows // 10:
+            return None
+        counts = {"Up": 0, "Down": 0}
+        run_side, run = None, 0
+        for outcome in outcomes + [None]:
+            if outcome == run_side:
+                run += 1
+                continue
+            if run_side in counts and run >= 3:
+                counts[run_side] += 1
+            run_side, run = outcome, 1
+        up, down = counts["Up"], counts["Down"]
+        return ("Up" if up > down else "Down" if down > up else None), up, down
 
     def _fav_skip_text(self):
         if self.fav_max_move_pct <= 0:
@@ -75,6 +120,14 @@ class ComboSim(DualSim):
                 except (KeyError, TypeError, ValueError):
                     dual = None
                 self.history[start] = [outcome if outcome in ("Up", "Down", "Tie") else None, dual]
+                try:
+                    self._record_move(start, float(row["start_price"]), float(row["end_price"]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+
+    def _record_move(self, window_start, start_price, end_price):
+        if start_price and end_price:
+            self.moves[window_start] = (end_price - start_price) / start_price * 100
 
     def _streak_before(self, window_start):
         """(count, side) of the same winner in a row ending with the last window; None when not known."""
@@ -113,6 +166,8 @@ class ComboSim(DualSim):
         step = self.duration * 60
         if prev_outcome in ("Up", "Down", "Tie"):
             self.history.setdefault(window_start - step, [None, None])[0] = prev_outcome
+        if prev_move_pct is not None:
+            self.moves[window_start - step] = prev_move_pct
         streak = self._streak_before(window_start)
         duals = [self.history.get(window_start - i * step, [None, None])[1] for i in range(1, self.dual_lookback + 1)]
         known = [d for d in duals if d is not None]
@@ -130,11 +185,44 @@ class ComboSim(DualSim):
                 return "skip", f"streak_{n}_{side.lower()}"
             if prev_move_pct is None:
                 return "skip", "prev_move_unknown"
+            reason = f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
+            other = "Down" if side == "Up" else "Up"
+            if self.strategy == "combo" and self.trend_windows > 0:
+                trend = self.trend_before(window_start - n * step)
+                if trend is None:
+                    reason += "_trend_unknown"
+                elif trend[0] is None:
+                    reason += f"_no_trend_{trend[1]}v{trend[2]}"
+                else:
+                    reason += f"_trend_{trend[0].lower()}_{trend[1]}v{trend[2]}"
+                    move = abs(prev_move_pct)
+                    action = None
+                    if trend[0] != side:
+                        reason += "_other_side"
+                        if move >= self.trend_against_min_move_pct:
+                            action = "against"
+                    else:
+                        reason += "_trending_side"
+                        if move < self.trend_continue_max_move_pct:
+                            action = "continue"
+                        elif self.trend_against_min_move_pct <= move < self.trend_against_max_move_pct:
+                            action = "against"
+                    if action is None:
+                        return "skip", reason
+                    if state is not None and state.window_start == window_start:
+                        state.bet_side = side if action == "continue" else other
+                    return action, reason
+            before = self.moves.get(window_start - 2 * step)
+            if (self.strategy == "combo" and self.continue_max_move_pct > 0 and before is not None
+                    and abs(prev_move_pct) < self.continue_max_move_pct and abs(prev_move_pct) < abs(before)):
+                if state is not None and state.window_start == window_start:
+                    state.bet_side = side
+                return "continue", f"{reason}_slowing_from_{before:+.3f}pct"
             if abs(prev_move_pct) < self.against_min_move_pct:
-                return "skip", f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
+                return "skip", reason
             if state is not None and state.window_start == window_start:
                 state.bet_side = "Down" if side == "Up" else "Up"
-            return "against", f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
+            return "against", reason
         if streak[0] == 2:
             return self._fav_unless_move(streak, prev_move_pct)
         if self.strategy == "fav":
@@ -146,7 +234,8 @@ class ComboSim(DualSim):
         return "skip", "recent_duals_unknown"
 
     def _first_orders(self, state, remaining, up_ask, down_ask):
-        """fav buys the favourite and against buys ``state.bet_side`` at its ask; dual windows place the dual."""
+        """fav buys the favourite, against and continue buy ``state.bet_side`` at its ask; dual windows place the
+        dual."""
         if state.mode == "fav":
             if up_ask == down_ask:
                 return []
@@ -157,12 +246,12 @@ class ComboSim(DualSim):
                 state.notes.append("not_traded")
                 return []
             return [Order(side, "main", price, self.contracts, remaining)]
-        if state.mode == "against":
+        if state.mode in ("against", "continue"):
             side = state.bet_side
             price = up_ask if side == "Up" else down_ask
             if price > self.against_max_cents / 100 + 1e-9:
                 state.trading = False
-                state.notes.append(f"against_{side.lower()}_{round(price * 100)}c_over_{self.against_max_cents}c")
+                state.notes.append(f"{state.mode}_{side.lower()}_{round(price * 100)}c_over_{self.against_max_cents}c")
                 state.notes.append("not_traded")
                 return []
             return [Order(side, "main", price, self.contracts, remaining)]
@@ -175,14 +264,15 @@ class ComboSim(DualSim):
             self.history.setdefault(state.window_start, [None, None])[1] = dual
         return state
 
-    def settle(self, state, outcome, *args, **kwargs):
+    def settle(self, state, outcome, start_price, end_price, *args, **kwargs):
         if outcome in ("Up", "Down", "Tie"):
             self.history.setdefault(state.window_start, [None, None])[0] = outcome
-        return super().settle(state, outcome, *args, **kwargs)
+        self._record_move(state.window_start, start_price, end_price)
+        return super().settle(state, outcome, start_price, end_price, *args, **kwargs)
 
     def orders_text(self, state):
         if state.mode == "dual":
             return super().orders_text(state)
-        label = "favourite" if state.mode == "fav" else "against"
+        label = {"fav": "favourite", "continue": "with streak"}.get(state.mode, "against")
         return " ".join(f"{label} {o.side} {o.contracts} @ {round(o.fill_price * 100)}¢"
                         for o in state.orders if o.filled) or f"{label} not filled"
