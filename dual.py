@@ -83,6 +83,10 @@ TRADES_HEADER = [
     "would_stop_price_cents",
     "would_stop_time_left",
     "would_stop_saved",
+    "take_profit_cents",
+    "tp_side",
+    "tp_contracts",
+    "tp_time_left",
     *[
         name
         for seconds in STOP_CHECK_SECONDS
@@ -340,6 +344,10 @@ class WindowState:
     stop_price: float = 0.0
     stop_time_left: float | None = None
     would_stop: tuple | None = None  # (side, contracts, bid, time_left) when the stop-loss is only logged
+    take_profit: float = 0.0  # resting sell limit for the whole position (0 = none)
+    tp_side: str | None = None
+    tp_contracts: int = 0
+    tp_time_left: float | None = None
     reload: float = 0.0  # dollars topped up at the start of this window
     # seconds -> (side, contracts, bid, orders filled by then): the stop-loss rule checked at each STOP_CHECK_SECONDS
     stop_checks: dict = field(default_factory=dict)
@@ -414,8 +422,9 @@ class WindowState:
         return sum(o.fill_price * o.contracts for o in self.fills(side))
 
     def held(self, side):
-        """Contracts still held: bought minus any sold by the stop-loss."""
-        return self.contracts(side) - (self.stop_contracts if self.stop_side == side else 0)
+        """Contracts still held: bought minus any sold by the stop-loss or the take-profit."""
+        return (self.contracts(side) - (self.stop_contracts if self.stop_side == side else 0)
+                - (self.tp_contracts if self.tp_side == side else 0))
 
     def avg_price(self, side):
         n = self.contracts(side)
@@ -813,6 +822,10 @@ class DualSim:
             sale = state.stop_price * state.stop_contracts
             payout += sale
             fee += sale * taker_fee_bps / 10000.0
+        if state.tp_side:
+            sale = state.take_profit * state.tp_contracts
+            payout += sale
+            fee += sale * maker_fee_bps / 10000.0
         for side in ("Up", "Down"):
             if outcome == side:
                 payout += state.held(side)
@@ -899,6 +912,10 @@ class DualSim:
                 "would_stop_price_cents": _cents(state.would_stop[2]) if state.would_stop else "",
                 "would_stop_time_left": _secs(state.would_stop[3]) if state.would_stop else "",
                 "would_stop_saved": f"{saved:+.4f}" if saved is not None else "",
+                "take_profit_cents": _cents(state.take_profit) if state.take_profit else "",
+                "tp_side": state.tp_side or "",
+                "tp_contracts": state.tp_contracts if state.tp_side else "",
+                "tp_time_left": _secs(state.tp_time_left),
                 **self._stop_check_columns(state, outcome, maker_fee_bps, taker_fee_bps),
                 **_cheap_columns("up", state.cheap_up),
                 **_cheap_columns("down", state.cheap_down),

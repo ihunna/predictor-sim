@@ -4,6 +4,7 @@ import csv
 import os
 import tempfile
 
+from against import AgainstSim
 from combo import ComboSim
 from dual import TRADES_HEADER, DualSim, last_capital_after, last_reloaded_total
 from leader import LeaderSim
@@ -523,16 +524,77 @@ def test_against_strategy(tmp):
     assert row["pnl"] == "4.0832"
 
 
+def against_sim(tmp, **kwargs):
+    return AgainstSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default", **kwargs)
+
+
+def test_against_exactly_three_and_take_profit(tmp):
+    sim = against_sim(tmp, trend_windows=0)
+    three_up = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
+                START - 1200: ["Down", True]}
+    sim.history = dict(three_up)
+    assert sim.regime_decision(START, None, 0.01) == ("skip", "streak_3_up_move_+0.010pct")
+    assert sim.regime_decision(START, None, None) == ("skip", "prev_move_unknown")
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, None, 0.05) == ("against", "streak_3_up_move_+0.050pct")
+    assert state.bet_side == "Down" and state.take_profit == 0
+    # the streak kept going: skipped until it breaks
+    sim.history[START] = ["Up", False]
+    assert sim.regime_decision(START + 300, None, 0.08) == ("skip", "streak_4_up_not_broken")
+    sim.history[START + 300] = ["Down", False]
+    assert sim.regime_decision(START + 600, None, 0.08) == ("skip", "streak_1_down")
+
+    sim.take_profit_all = True
+    sim.history = dict(three_up)
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, None, 0.05) == ("against", "streak_3_up_move_+0.050pct_tp_85c")
+    assert state.take_profit == 0.85
+    sim.resolve_decision(state, None, mode="against")
+    for offset, up, down in ((1, 0.53, 0.48), (100, 0.16, 0.86), (150, 0.14, 0.87), (290, 0.97, 0.04)):
+        sim.on_tick(START + offset, up, down)
+    state = sim.finish_window()
+    assert state.tp_side == "Down" and state.tp_contracts == 8 and state.tp_time_left == 150
+    assert state.held("Down") == 0 and "take-profit" in sim.orders_text(state)
+    row = sim.settle(state, "Up", 1, 2, None, taker_fee_bps=200)
+    assert row["pnl"] == "2.8832" and row["take_profit_cents"] == 85 and row["tp_contracts"] == 8
+
+    sim.take_profit_cents = 0
+    sim.history = dict(three_up)
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, None, 0.05) == ("against", "streak_3_up_move_+0.050pct")
+    assert state.take_profit == 0
+
+
+def test_against_trend_take_profit(tmp):
+    sim = against_sim(tmp, trend_windows=12)
+    before = ["Up"] * 3 + ["Down"] + ["Up"] * 3 + ["Down", "Up", "Down", "Up"]
+
+    def setup(side):
+        other = "Down" if side == "Up" else "Up"
+        sim.history = {START - (15 - i) * 300: [o, False] for i, o in enumerate(before)}
+        sim.history[START - 1200] = [other, False]
+        for i in (1, 2, 3):
+            sim.history[START - i * 300] = [side, False]
+        return sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+
+    state = setup("Up")
+    assert sim.trend_before(START - 900) == ("Up", 2, 0)
+    assert sim.regime_decision(START, None, 0.05) == (
+        "against", "streak_3_up_move_+0.050pct_trend_up_2v0_with_trend_tp_85c")
+    assert state.bet_side == "Down" and state.take_profit == 0.85
+    state = setup("Down")
+    assert sim.regime_decision(START, None, -0.05) == (
+        "against", "streak_3_down_move_-0.050pct_trend_up_2v0_against_trend")
+    assert state.bet_side == "Up" and state.take_profit == 0
+    sim.history.pop(START - 1500)
+    sim.history.pop(START - 1800)
+    assert sim.regime_decision(START, None, -0.05)[1].endswith("_trend_unknown_tp_85c")
+
+
 def test_combo_strategy(tmp):
     sim = combo_sim(tmp, "combo", trend_windows=0)
     sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
-    assert sim.regime_decision(START, None, 0.01) == ("fav", "streak_2_up")
-    assert sim.regime_decision(START, None, -0.019) == ("fav", "streak_2_up")
-    assert sim.regime_decision(START, None, -0.03) == ("skip", "streak_2_up_move_-0.030pct")
-    assert sim.regime_decision(START, None, 0.08) == ("skip", "streak_2_up_move_+0.080pct")
-    assert sim.regime_decision(START, None, None) == ("skip", "streak_2_up_prev_move_unknown")
-    sim.fav_max_move_pct = 0
-    assert sim.regime_decision(START, None, 0.08) == ("fav", "streak_2_up")
+    assert sim.regime_decision(START, None, 0.01) == ("skip", "streak_2_up")
     sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
                    START - 1200: ["Down", True]}
     assert sim.regime_decision(START, None, 0.08) == ("against", "streak_3_up_move_+0.080pct")
@@ -590,24 +652,35 @@ def test_combo_trend(tmp):
     setup("Down")
     assert sim.trend_before(START - 900) == ("Up", 2, 0)
     state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
-    assert sim.regime_decision(START, None, -0.06) == ("against", "streak_3_down_move_-0.060pct_trend_up_2v0_other_side")
+    tag = "trend_up_2v0_against_trend"
+    assert sim.regime_decision(START, None, -0.03) == ("skip", f"streak_3_down_move_-0.030pct_{tag}")
+    assert sim.regime_decision(START, None, -0.06) == ("against", f"streak_3_down_move_-0.060pct_{tag}")
     assert state.bet_side == "Up"
-    assert sim.regime_decision(START, None, -0.03) == ("skip", "streak_3_down_move_-0.030pct_trend_up_2v0_other_side")
+    # the streak kept going: no second bet against it, unless the stop is off
+    sim.history[START] = ["Down", False]
+    assert sim.regime_decision(START + 300, None, -0.08) == (
+        "skip", f"streak_4_down_move_-0.080pct_{tag}_lost_on_this_streak")
+    sim.against_stop_after_loss = False
+    assert sim.regime_decision(START + 300, None, -0.08)[0] == "against"
+    sim.against_stop_after_loss = True
+
     setup("Up")
-    assert sim.regime_decision(START, None, 0.01) == ("continue", "streak_3_up_move_+0.010pct_trend_up_2v0_trending_side")
+    tag = "trend_up_2v0_with_trend"
+    assert sim.regime_decision(START, None, 0.01) == ("skip", f"streak_3_up_move_+0.010pct_{tag}")  # move before unknown
+    sim.moves[START - 600] = 0.04
+    assert sim.regime_decision(START, None, 0.03) == ("continue", f"streak_3_up_move_+0.030pct_{tag}_slowing_from_+0.040pct")
     assert state.bet_side == "Up"
-    assert sim.regime_decision(START, None, 0.07) == ("against", "streak_3_up_move_+0.070pct_trend_up_2v0_trending_side")
-    assert state.bet_side == "Down"
-    assert sim.regime_decision(START, None, 0.03)[0] == "skip"
-    assert sim.regime_decision(START, None, 0.15)[0] == "skip"
+    assert sim.regime_decision(START, None, 0.045) == ("skip", f"streak_3_up_move_+0.045pct_{tag}")
+    assert sim.regime_decision(START, None, 0.07) == ("skip", f"streak_3_up_move_+0.070pct_{tag}")
+
     before[:] = ["Up"] * 3 + ["Down"] * 3 + ["Up", "Down"] * 3
     setup("Up")
     assert sim.trend_before(START - 900) == (None, 1, 1)
-    assert sim.regime_decision(START, None, 0.03) == ("against", "streak_3_up_move_+0.030pct_no_trend_1v1")
+    assert sim.regime_decision(START, None, 0.03) == ("skip", "streak_3_up_move_+0.030pct_no_trend_1v1")
     sim.history.pop(START - 1500)
-    assert sim.regime_decision(START, None, 0.03) == ("against", "streak_3_up_move_+0.030pct_no_trend_1v1")
+    assert sim.regime_decision(START, None, 0.03) == ("skip", "streak_3_up_move_+0.030pct_no_trend_1v1")
     sim.history.pop(START - 1800)
-    assert sim.regime_decision(START, None, 0.03) == ("against", "streak_3_up_move_+0.030pct_trend_unknown")
+    assert sim.regime_decision(START, None, 0.03) == ("skip", "streak_3_up_move_+0.030pct_trend_unknown")
 
 
 def test_regime_history_from_log(tmp):
@@ -705,6 +778,8 @@ def main():
             test_regime_decision,
             test_regime_favourite_window,
             test_against_strategy,
+            test_against_exactly_three_and_take_profit,
+            test_against_trend_take_profit,
             test_combo_strategy,
             test_combo_continue,
             test_combo_trend,

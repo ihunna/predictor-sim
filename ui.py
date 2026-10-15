@@ -504,19 +504,25 @@ class Dashboard:
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "combo":
-            skip = (f"combo: 2 in a row → favourite ≤{sim.fav_max_cents}¢ · {sim.against_min_streak}+ in a row & "
-                    f"last move ≥{sim.against_min_move_pct:.2f}% → other side"
-                    + (f" · last move <{sim.continue_max_move_pct:.2f}% & slowing → streak side"
-                       if sim.continue_max_move_pct > 0 else "") + ", else skip"
-                    + (f" (with a {sim.trend_windows}-window trend: other side ≥{sim.trend_against_min_move_pct:.2f}% "
-                       f"→ against · trending side <{sim.trend_continue_max_move_pct:.2f}% → continue, "
-                       f"{sim.trend_against_min_move_pct:.2f}-{sim.trend_against_max_move_pct:.2f}% → against)"
-                       if sim.trend_windows > 0 else ""))
+            if sim.trend_windows > 0:
+                skip = (f"streaks: {sim.against_min_streak}+ in a row "
+                        f"against the trend & last move ≥{sim.trend_against_min_move_pct:.2f}% → it breaks"
+                        + (" (once)" if sim.against_stop_after_loss else "")
+                        + f" · with the trend & last move <{sim.continue_max_move_pct:.2f}% slowing → it continues"
+                        f" · no trend → skip")
+            else:
+                skip = (f"streaks: {sim.against_min_streak}+ in a row & "
+                        f"last move ≥{sim.against_min_move_pct:.2f}% → other side"
+                        + (f" · last move <{sim.continue_max_move_pct:.2f}% & slowing → streak side"
+                           if sim.continue_max_move_pct > 0 else "") + ", else skip")
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "against":
-            skip = (f"against: {sim.against_min_streak}+ in a row & last move ≥{sim.against_min_move_pct:.2f}% "
-                    f"→ other side ≤{sim.against_max_cents}¢, else skip")
+            tp = ("no take-profit" if sim.take_profit_cents <= 0
+                  else f"take-profit {sim.take_profit_cents}¢ on every bet" if sim.take_profit_all
+                  else f"with the trend → take-profit {sim.take_profit_cents}¢")
+            skip = (f"against: exactly {sim.against_min_streak} in a row & last move ≥{sim.against_min_move_pct:.2f}% "
+                    f"→ other side ≤{sim.against_max_cents}¢, once per streak · {tp}, else skip")
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "fav":
