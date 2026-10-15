@@ -1,9 +1,10 @@
 """against: when exactly ``against_min_streak`` same winners in a row and the last window moved enough (at least
 ``against_min_move_pct``% and ``min_move_vs_avg`` times the average move of the last ``avg_windows``), buy the other
-side (one bet per streak: a streak that keeps going is skipped until it breaks). Before entry it checks the trend (the
-side with more 3+ streaks in the last ``trend_windows`` windows): a streak that goes with the trend (or an unknown
-trend) gets a take-profit, a resting sell limit for the whole position; ``take_profit_all`` puts it on every bet,
-``take_profit_cents=0`` turns it off. Same rules for every window duration."""
+side only when the streak goes with the recent price structure (higher highs and lows = up, lower highs and lows =
+down). A bounce against that structure, mixed structure or unknown structure is skipped. One bet per streak: a streak
+that keeps going is skipped until it breaks. ``take_profit_all`` puts a resting sell limit on every bet;
+``take_profit_cents=0`` turns it off. Structure, RSI and move-vs-average are logged on every window. Same rules for
+every window duration."""
 from combo import ComboSim
 from logs import format_time
 
@@ -11,8 +12,8 @@ from logs import format_time
 class AgainstSim(ComboSim):
     def __init__(self, *args, take_profit_cents=85, take_profit_all=False, min_move_vs_avg=1.0, avg_windows=24,
                  rsi_windows=14, **kwargs):
-        kwargs.setdefault("trend_windows", 96)
-        super().__init__(*args, strategy="against", **kwargs)
+        kwargs.pop("trend_windows", None)
+        super().__init__(*args, strategy="against", trend_windows=0, **kwargs)
         self.take_profit_cents = take_profit_cents
         self.take_profit_all = take_profit_all
         self.min_move_vs_avg = min_move_vs_avg
@@ -57,19 +58,16 @@ class AgainstSim(ComboSim):
         vs_avg = (f" and at least {self.min_move_vs_avg:g}x the average move of the last {self.avg_windows} windows"
                   if self.min_move_vs_avg > 0 else "")
         return (
-            f"🎯 Against: at exactly {self.against_min_streak} same winners in a row, when the last window moved "
-            f"{self.against_min_move_pct:.2f}%+{vs_avg}, buy {self.contracts} of the other side "
-            f"(≤{self.against_max_cents}¢); "
-            f"a streak that keeps going is not bet again until it breaks; {self._take_profit_text()} | {capital}"
+            f"🎯 Against: at exactly {self.against_min_streak} same winners in a row with the price structure, when "
+            f"the last window moved {self.against_min_move_pct:.2f}%+{vs_avg}, buy {self.contracts} of the other side "
+            f"(≤{self.against_max_cents}¢); bounce / mixed / unknown structure → skip; a streak that keeps going is "
+            f"not bet again until it breaks; {self._take_profit_text()} | {capital}"
         )
 
     def _take_profit_text(self):
-        if self.take_profit_cents <= 0:
+        if self.take_profit_cents <= 0 or not self.take_profit_all:
             return "no take-profit, held to the end"
-        if self.take_profit_all:
-            return f"take-profit: sell all at {self.take_profit_cents}¢, else held to the end"
-        return (f"streak with the trend (the side with more 3+ streaks in the last {self.trend_windows} windows) → "
-                f"take-profit: sell all at {self.take_profit_cents}¢; else held to the end")
+        return f"take-profit: sell all at {self.take_profit_cents}¢, else held to the end"
 
     def regime_decision(self, window_start, prev_outcome=None, prev_move_pct=None):
         """("against" | "skip", reason), and sets the side and the take-profit on the current state."""
@@ -104,19 +102,14 @@ class AgainstSim(ComboSim):
             reason += f"_{vs_avg:.2f}x_avg"
             if vs_avg < self.min_move_vs_avg - 1e-9:
                 return "skip", reason
-        with_trend = False
-        if self.trend_windows > 0:
-            trend = self.trend_before(window_start - n * step)
-            if trend is None:
-                reason += "_trend_unknown"
-                with_trend = True
-            elif trend[0] is None:
-                reason += f"_no_trend_{trend[1]}v{trend[2]}"
-            else:
-                with_trend = trend[0] == side
-                reason += (f"_trend_{trend[0].lower()}_{trend[1]}v{trend[2]}_"
-                           + ("with_trend" if with_trend else "against_trend"))
-        take_profit = self.take_profit_cents > 0 and (with_trend or self.take_profit_all)
+        if not structure:
+            return "skip", f"{reason}_structure_unknown"
+        reason += f"_structure_{structure}"
+        if structure == "mixed":
+            return "skip", reason
+        if structure != side.lower():
+            return "skip", f"{reason}_bounce"
+        take_profit = self.take_profit_cents > 0 and self.take_profit_all
         if take_profit:
             reason += f"_tp_{self.take_profit_cents}c"
         if here:
