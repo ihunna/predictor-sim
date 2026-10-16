@@ -366,6 +366,26 @@ class Dashboard:
                                   style="bold green" if prev_move > 0 else "bold red" if prev_move < 0 else "bold")
             parts.append(title_line)
 
+            if sim.strategy == "against":
+                structure = (state.structure if state.structure else getattr(sim, "structure", None)) or "unknown"
+                struct_line = Text()
+                struct_line.append("Structure ", style="dim")
+                struct_line.append(
+                    structure.upper() if structure != "unknown" else "unknown",
+                    style=("bold green" if structure == "up" else "bold red" if structure == "down"
+                           else "bold yellow" if structure == "mixed" else "bold dim"))
+                struct_line.append("   streak ", style="dim")
+                struct_line.append(state.streak_before or "unknown", style="bold")
+                struct_line.append("   move ", style="dim")
+                if state.move_vs_avg is not None:
+                    struct_line.append(f"{state.move_vs_avg:.2f}× avg", style="bold")
+                else:
+                    struct_line.append("--", style="dim")
+                if state.rsi is not None:
+                    struct_line.append("   RSI ", style="dim")
+                    struct_line.append(f"{state.rsi:.0f}", style="bold")
+                parts.append(struct_line)
+
             price_line = Text()
             price_line.append("PTB ", style="dim")
             price_line.append(format_dollar(ptb) if ptb else "--", style="bold")
@@ -521,11 +541,7 @@ class Dashboard:
             tp = (f"take-profit {sim.take_profit_cents}¢" if sim.take_profit_cents > 0 and sim.take_profit_all
                   else "no take-profit")
             vs_avg = f" & ≥{sim.min_move_vs_avg:g}x avg move" if sim.min_move_vs_avg > 0 else ""
-            structure = ((state.structure if state is not None and state.structure else None)
-                         or getattr(sim, "structure", None) or "unknown")
-            skip = (f"against: exactly {sim.against_min_streak} in a row against structure & last move "
-                    f"≥{sim.against_min_move_pct:.2f}%{vs_avg} → other side ≤{sim.against_max_cents}¢, once · "
-                    f"with-structure/mixed skip · {tp} · structure {structure}")
+            skip = (f"against: exactly {sim.against_min_streak} against structure{vs_avg} → other side · {tp}")
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "fav":

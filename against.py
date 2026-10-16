@@ -1,10 +1,9 @@
-"""against: when exactly ``against_min_streak`` same winners in a row and the last window moved enough (at least
-``against_min_move_pct``% and ``min_move_vs_avg`` times the average move of the last ``avg_windows``), buy the other
-side only when the streak is against the recent price structure (the weak / non-trending side). A streak that goes
-with the structure (trending side), mixed structure or unknown structure is skipped. One bet per streak: a streak
-that keeps going is skipped until it breaks. ``take_profit_all`` puts a resting sell limit on every bet;
-``take_profit_cents=0`` turns it off. Structure, RSI and move-vs-average are logged on every window. Same rules for
-every window duration."""
+"""against: when exactly ``against_min_streak`` same winners in a row and the last window moved
+``min_move_vs_avg`` times the average move of the last ``avg_windows``, buy the other side only when the streak is
+against the recent price structure (the weak / non-trending side). A streak that goes with the structure (trending
+side), mixed structure or unknown structure is skipped. One bet per streak: a streak that keeps going is skipped
+until it breaks. ``take_profit_all`` puts a resting sell limit on every bet; ``take_profit_cents=0`` turns it off.
+Structure, RSI and move-vs-average are logged on every window. Same rules for every window duration."""
 from combo import ComboSim
 from logs import format_time
 
@@ -59,14 +58,13 @@ class AgainstSim(ComboSim):
 
     def summarize(self):
         capital = f"capital ${self.capital:.2f} ({self.capital_source})"
-        vs_avg = (f" and at least {self.min_move_vs_avg:g}x the average move of the last {self.avg_windows} windows"
-                  if self.min_move_vs_avg > 0 else "")
+        vs_avg = (f" when the last window moved at least {self.min_move_vs_avg:g}x the average of the last "
+                  f"{self.avg_windows} windows" if self.min_move_vs_avg > 0 else "")
         return (
             f"🎯 Against: at exactly {self.against_min_streak} same winners in a row against the price structure "
-            f"(non-trending side), when the last window moved {self.against_min_move_pct:.2f}%+{vs_avg}, buy "
-            f"{self.contracts} of the other side (≤{self.against_max_cents}¢); trending-side streak / mixed / "
-            f"unknown → skip; a streak that keeps going is not bet again until it breaks; "
-            f"{self._take_profit_text()} | {capital}"
+            f"(non-trending side){vs_avg}, buy {self.contracts} of the other side (≤{self.against_max_cents}¢); "
+            f"trending-side streak / mixed / unknown → skip; a streak that keeps going is not bet again until it "
+            f"breaks; {self._take_profit_text()} | {capital}"
         )
 
     def _take_profit_text(self):
@@ -100,8 +98,6 @@ class AgainstSim(ComboSim):
         if prev_move_pct is None:
             return "skip", "prev_move_unknown"
         reason = f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
-        if abs(prev_move_pct) < self.against_min_move_pct:
-            return "skip", reason
         if self.min_move_vs_avg > 0:
             if vs_avg is None:
                 return "skip", f"{reason}_avg_move_unknown"

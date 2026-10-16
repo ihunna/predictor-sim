@@ -346,18 +346,18 @@ def parse_args():
                              "regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
                              "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
                              "no duals. against: at exactly --against-min-streak in a row against the price structure "
-                             "(non-trending side) and the last window moved --against-min-move%%+ / --move-vs-avg× "
-                             "the recent average, buy the other side once per streak; with-structure/mixed → skip. "
-                             "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
+                             "(non-trending side) when the last move is --move-vs-avg× the recent average, buy the "
+                             "other side once per streak; with-structure/mixed → skip. combo: streaks of 3+ only, "
+                             "bet to break against the trend and to continue with it. (fav, "
                              "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
                              "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
     parser.add_argument("--against-min-streak", type=int, default=3, metavar="WINDOWS",
                         help="Against: bet at exactly this many same winners in a row; combo: this many or more "
                              "(default 3).")
     parser.add_argument("--against-min-move", type=float, default=None, metavar="PCT",
-                        help="Against / combo: bet only when the last window moved this many percent or more "
-                             "(against: 0.02 on every duration; combo: 0.02 on 5m, 0.03 on 15m, 0.07 on 60m, and "
-                             "the combo move defaults below scale the same way).")
+                        help="Combo: bet only when the last window moved this many percent or more "
+                             "(default 0.02 on 5m, 0.03 on 15m, 0.07 on 60m; the combo move defaults below scale "
+                             "the same way). Against ignores this and uses --move-vs-avg instead.")
     parser.add_argument("--against-max", type=int, default=99, metavar="CENTS",
                         help="Against and continue: only buy at this ask or below (default 99 = no cap).")
     parser.add_argument("--move-vs-avg", type=float, default=1.0, metavar="TIMES",
