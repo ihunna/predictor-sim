@@ -1,15 +1,15 @@
-"""against: when exactly ``against_min_streak`` same winners in a row and the last window moved
-``min_move_vs_avg`` times the average move of the last ``avg_windows``, buy the other side only when the streak is
+"""against: when exactly ``against_min_streak`` same winners in a row, buy the other side only when the streak is
 against the recent price structure (the weak / non-trending side). A streak that goes with the structure (trending
 side), mixed structure or unknown structure is skipped. One bet per streak: a streak that keeps going is skipped
-until it breaks. ``take_profit_all`` puts a resting sell limit on every bet; ``take_profit_cents=0`` turns it off.
-Structure, RSI and move-vs-average are logged on every window. Same rules for every window duration."""
+until it breaks. ``min_move_vs_avg`` (default 0 = off) can require the last move to be that many times the average
+of the last ``avg_windows``; it is always logged. ``take_profit_all`` puts a resting sell limit on every bet;
+``take_profit_cents=0`` turns it off. Same rules for every window duration."""
 from combo import ComboSim
 from logs import format_time
 
 
 class AgainstSim(ComboSim):
-    def __init__(self, *args, take_profit_cents=85, take_profit_all=False, min_move_vs_avg=1.0, avg_windows=24,
+    def __init__(self, *args, take_profit_cents=85, take_profit_all=False, min_move_vs_avg=0.0, avg_windows=24,
                  rsi_windows=14, **kwargs):
         kwargs.pop("trend_windows", None)
         super().__init__(*args, strategy="against", trend_windows=0, **kwargs)
@@ -98,10 +98,11 @@ class AgainstSim(ComboSim):
         if prev_move_pct is None:
             return "skip", "prev_move_unknown"
         reason = f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
+        if vs_avg is not None:
+            reason += f"_{vs_avg:.2f}x_avg"
         if self.min_move_vs_avg > 0:
             if vs_avg is None:
                 return "skip", f"{reason}_avg_move_unknown"
-            reason += f"_{vs_avg:.2f}x_avg"
             if vs_avg < self.min_move_vs_avg - 1e-9:
                 return "skip", reason
         if not structure:

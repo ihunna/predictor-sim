@@ -346,9 +346,8 @@ def parse_args():
                              "regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
                              "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
                              "no duals. against: at exactly --against-min-streak in a row against the price structure "
-                             "(non-trending side) when the last move is --move-vs-avg× the recent average, buy the "
-                             "other side once per streak; with-structure/mixed → skip. combo: streaks of 3+ only, "
-                             "bet to break against the trend and to continue with it. (fav, "
+                             "(non-trending side), buy the other side once per streak; with-structure/mixed → skip. "
+                             "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
                              "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
                              "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
     parser.add_argument("--against-min-streak", type=int, default=3, metavar="WINDOWS",
@@ -360,9 +359,9 @@ def parse_args():
                              "the same way). Against ignores this and uses --move-vs-avg instead.")
     parser.add_argument("--against-max", type=int, default=99, metavar="CENTS",
                         help="Against and continue: only buy at this ask or below (default 99 = no cap).")
-    parser.add_argument("--move-vs-avg", type=float, default=1.0, metavar="TIMES",
+    parser.add_argument("--move-vs-avg", type=float, default=0.0, metavar="TIMES",
                         help="Against: bet only when the last window's move is at least this many times the average "
-                             "move of the last --avg-windows windows (default 1; 0 = off).")
+                             "move of the last --avg-windows windows (default 0 = off; try 1 later to re-enable).")
     parser.add_argument("--avg-windows", type=int, default=24, metavar="WINDOWS",
                         help="Against: windows for the average move and the structure (default 24).")
     parser.add_argument("--take-profit-at", type=int, default=85, metavar="CENTS",
