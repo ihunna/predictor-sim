@@ -4,57 +4,19 @@ side), mixed structure or unknown structure is skipped. One bet per streak: a st
 until it breaks. ``min_move_vs_avg`` (default 0 = off) can require the last move to be that many times the average
 of the last ``avg_windows``; it is always logged. ``take_profit_all`` puts a resting sell limit on every bet;
 ``take_profit_cents=0`` turns it off. Same rules for every window duration."""
-from combo import ComboSim
 from logs import format_time
+from .combo import ComboSim
 
 
 class AgainstSim(ComboSim):
     def __init__(self, *args, take_profit_cents=85, take_profit_all=False, min_move_vs_avg=0.0, avg_windows=24,
                  rsi_windows=14, **kwargs):
         kwargs.pop("trend_windows", None)
-        super().__init__(*args, strategy="against", trend_windows=0, **kwargs)
+        super().__init__(*args, strategy="against", trend_windows=0, avg_windows=avg_windows,
+                         rsi_windows=rsi_windows, **kwargs)
         self.take_profit_cents = take_profit_cents
         self.take_profit_all = take_profit_all
         self.min_move_vs_avg = min_move_vs_avg
-        self.avg_windows = avg_windows
-        self.rsi_windows = rsi_windows
-        self.structure = ""  # last known: "up" | "down" | "mixed" | ""
-        self.avg_move_pct = None
-        self.move_vs_avg = None
-        self.rsi = None
-
-    def _recent_moves(self, window_start, count):
-        """The moves (%) of the ``count`` windows before ``window_start``, oldest first, None for a missing one;
-        None when more than a tenth are missing."""
-        step = self.duration * 60
-        moves = [self.moves.get(window_start - i * step) for i in range(count, 0, -1)]
-        return None if moves.count(None) > count // 10 else moves
-
-    def move_stats(self, window_start, streak_len=0):
-        """(average move size %, RSI 0-100, structure "up" | "down" | "mixed" | "") from the recent windows; the
-        structure is the higher/lower highs and lows of the windows before the streak, from the summed moves."""
-        moves = self._recent_moves(window_start, self.avg_windows)
-        known = [m for m in moves or [] if m is not None]
-        avg = sum(abs(m) for m in known) / len(known) if known else None
-        rsi = None
-        last = self._recent_moves(window_start, self.rsi_windows)
-        if last:
-            gains = sum(m for m in last if m and m > 0)
-            losses = -sum(m for m in last if m and m < 0)
-            rsi = 100 * gains / (gains + losses) if gains + losses else 50.0
-        structure = ""
-        if moves and len(moves) - streak_len > 6:
-            level, points = 0.0, []
-            for m in moves[:len(moves) - streak_len]:
-                start, level = level, level + (m or 0.0)
-                points.append((start, level))
-            half = len(points) // 2
-            a, b = points[:half], points[half:]
-            hi_a, hi_b = max(max(p) for p in a), max(max(p) for p in b)
-            lo_a, lo_b = min(min(p) for p in a), min(min(p) for p in b)
-            structure = ("up" if hi_b > hi_a and lo_b > lo_a else "down" if hi_b < hi_a and lo_b < lo_a
-                         else "mixed")
-        return avg, rsi, structure
 
     def summarize(self):
         capital = f"capital ${self.capital:.2f} ({self.capital_source})"
@@ -82,12 +44,14 @@ class AgainstSim(ComboSim):
         streak = self._streak_before(window_start)
         state = self.current
         here = state is not None and state.window_start == window_start
-        avg, rsi, structure = self.move_stats(window_start, streak[0] if streak else 0)
-        vs_avg = abs(prev_move_pct) / avg if prev_move_pct is not None and avg else None
-        self.avg_move_pct, self.move_vs_avg, self.rsi, self.structure = avg, vs_avg, rsi, structure
+        avg, vs_avg, rsi, structure = self.refresh_structure(
+            window_start, streak[0] if streak else 0, prev_move_pct)
         if here:
             state.streak_before = f"{streak[0]} {streak[1]}" if streak else "unknown"
-            state.avg_move_pct, state.move_vs_avg, state.rsi, state.structure = avg, vs_avg, rsi, structure
+            state.avg_move_pct = avg
+            state.move_vs_avg = vs_avg
+            state.rsi = rsi
+            state.structure = structure
         if streak is None:
             return "skip", "streak_unknown"
         n, side = streak
@@ -126,9 +90,8 @@ class AgainstSim(ComboSim):
         state = super().start_window(window_start, window_end, slug, market_id, now=now,
                                      skip_reason=skip_reason, decision_pending=decision_pending)
         streak = self._streak_before(window_start)
-        avg, rsi, structure = self.move_stats(window_start, streak[0] if streak else 0)
-        self.avg_move_pct, self.rsi, self.structure = avg, rsi, structure
-        state.avg_move_pct, state.rsi, state.structure = avg, rsi, structure
+        avg, vs_avg, rsi, structure = self.refresh_structure(window_start, streak[0] if streak else 0)
+        state.avg_move_pct, state.move_vs_avg, state.rsi, state.structure = avg, vs_avg, rsi, structure
         state.streak_before = f"{streak[0]} {streak[1]}" if streak else "unknown"
         return state
 

@@ -1,12 +1,13 @@
-"""Dual-limit simulator: a limit buy on both Up and Down every window, plus everything shared by the other
-strategies (price tracking, logging, settlement). combo.py (regime / fav / against / combo) and leader.py (leader +
-hedge) build on ``DualSim``.
+"""Shared trading simulator (``BaseSim``): the common engine every bot connects to.
+
+Price tracking, orders, fills, settlement, logging, and the shared ``PriceStructure`` trend. Strategies import
+``BaseSim`` from here and subclass it (``DualSim``, ``ComboSim``, ``LeaderSim``, …).
 
 An order fills when its side's ask reaches its price or lower. If the ask is already at or below the price when
 the order goes in, it fills at once at the ask (a taker fill); otherwise it fills at its price (maker).
 
-Hedge: once one side fills and the other has not, the other side's order is split into a lock-in order at
-``hedge_cents`` (just enough contracts to break even if that side wins) and the rest at the original limit."""
+Hedge helpers live here for strategies that use them (dual splits the unfilled side into a lock-in at
+``hedge_cents`` and the rest at the original limit)."""
 import csv
 import math
 import os
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from logs import format_time
+from structure import PriceStructure
 
 CHEAP_LEVELS = (40, 30, 20, 15, 10, 5)
 RISE_LEVELS = (60, 65, 70, 75, 80, 85, 90, 95)
@@ -483,13 +485,15 @@ class WindowState:
         return "none"
 
 
-class DualSim:
+class BaseSim:
+    """Shared engine for every strategy bot (dual, leader, combo, against, …)."""
+
     strategy = "dual"
     start_mode = "dual"  # WindowState.mode at the start of each window
 
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
-                 stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0):
+                 stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
@@ -510,6 +514,49 @@ class DualSim:
         self.capital_source = capital_source
         self.current = None
         self.write_lock = threading.Lock()
+        self.price_structure = PriceStructure(duration, avg_windows=avg_windows, rsi_windows=rsi_windows)
+
+    @property
+    def structure(self):
+        return self.price_structure.structure
+
+    @property
+    def avg_move_pct(self):
+        return self.price_structure.avg_move_pct
+
+    @property
+    def move_vs_avg(self):
+        return self.price_structure.move_vs_avg
+
+    @property
+    def rsi(self):
+        return self.price_structure.rsi
+
+    @property
+    def moves(self):
+        return self.price_structure.moves
+
+    @moves.setter
+    def moves(self, value):
+        self.price_structure.moves = value
+
+    @property
+    def avg_windows(self):
+        return self.price_structure.avg_windows
+
+    @property
+    def rsi_windows(self):
+        return self.price_structure.rsi_windows
+
+    def load_updown(self, path):
+        """Load official window prices into the shared price-structure trend."""
+        return self.price_structure.load_updown(path)
+
+    def move_stats(self, window_start, streak_len=0):
+        return self.price_structure.move_stats(window_start, streak_len)
+
+    def refresh_structure(self, window_start, streak_len=0, prev_move_pct=None):
+        return self.price_structure.refresh(window_start, streak_len, prev_move_pct)
 
     def summarize(self):
         when = "at window start" if self.place_at is None else f"at {self.place_at}s left"
@@ -849,6 +896,7 @@ class DualSim:
 
     def settle(self, state, outcome, start_price, end_price, prev_move, maker_fee_bps=0, taker_fee_bps=0, notes=()):
         """Writes the trade row and moves the balance. Returns the row dict."""
+        self.price_structure.record_move(state.window_start, start_price, end_price)
         fee, pnl = self.compute_result(state, outcome, maker_fee_bps, taker_fee_bps)
         hedge = state.hedge_order
         saved = self.would_stop_saved(state, outcome, taker_fee_bps)
@@ -1004,3 +1052,4 @@ class DualSim:
         else:
             orders = self.orders_text(state)
         return f"{self.status_label()}: {orders} | ${self.capital:.2f}"
+

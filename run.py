@@ -11,11 +11,9 @@ import socket
 import threading
 import time
 
-from against import AgainstSim
-from combo import STRATEGIES, ComboSim
-from dual import DualSim, last_capital_after, last_reloaded_total
-from leader import LeaderSim
 from logs import format_lowest_cents, format_time, log_to_csv
+from sim import last_capital_after, last_reloaded_total
+from strategies import AgainstSim, ComboSim, DualSim, LeaderSim, STRATEGIES
 from predict_feed import (
     CHAINLINK_FEED_IDS,
     SUPPORTED_DURATIONS,
@@ -506,6 +504,7 @@ def main():
                        fav_max_move_pct=args.fav_max_move, continue_max_move_pct=args.continue_max_move,
                        trend_windows=args.trend_windows, trend_against_min_move_pct=args.trend_against_min_move,
                        against_stop_after_loss=not args.against_keep_betting)
+    sim.load_updown(updown_file)
     if strategy in STRATEGIES:
         if trades_file != dual_trades_file:
             sim.load_history(dual_trades_file)

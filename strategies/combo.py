@@ -1,4 +1,4 @@
-"""Streak strategies, built on the dual (dual.py), logged to the same trades format.
+"""Streak strategies (regime / fav / combo), built on BaseSim (sim.py).
 
 regime: exactly 2 same winners in a row -> buy the favourite (the side with the higher ask) at its ask and hold;
 else the dual if one of the last few windows was a dual (both sides reached the limit); else skip.
@@ -10,16 +10,17 @@ import csv
 import os
 import re
 
-from dual import DualSim, Order
+from sim import BaseSim, Order
 
 STRATEGIES = ("regime", "fav", "against", "combo")
 
 
-class ComboSim(DualSim):
+class ComboSim(BaseSim):
     def __init__(self, *args, strategy="combo", fav_max_cents=55, dual_lookback=3, against_min_streak=3,
                  against_min_move_pct=0.02, against_max_cents=99, fav_max_move_pct=0.02, continue_max_move_pct=0.05,
-                 trend_windows=96, trend_against_min_move_pct=0.05, against_stop_after_loss=True, **kwargs):
-        super().__init__(*args, **kwargs)
+                 trend_windows=96, trend_against_min_move_pct=0.05, against_stop_after_loss=True,
+                 avg_windows=24, rsi_windows=14, **kwargs):
+        super().__init__(*args, avg_windows=avg_windows, rsi_windows=rsi_windows, **kwargs)
         if strategy not in STRATEGIES:
             raise ValueError(f"unknown strategy {strategy!r}")
         self.strategy = strategy
@@ -34,7 +35,6 @@ class ComboSim(DualSim):
         self.fav_max_cents = fav_max_cents
         self.dual_lookback = dual_lookback
         self.history = {}  # window_start -> [outcome or None, dual (both sides reached the limit) or None]
-        self.moves = {}  # window_start -> BTC move in %
         self.against_streaks = {}  # (streak start, side) -> first window bet against it
 
     def summarize(self):
@@ -104,6 +104,13 @@ class ComboSim(DualSim):
             return ""
         return f", only when the last window moved under {self.fav_max_move_pct:.2f}%"
 
+    def load_updown(self, path):
+        """Loads outcomes into streak history and BTC moves into the shared ``PriceStructure``."""
+        for start, outcome in super().load_updown(path):
+            entry = self.history.setdefault(start, [None, None])
+            if entry[0] is None:
+                entry[0] = outcome
+
     def load_history(self, path):
         """Fills the window history (winner, dual or not) from an existing trades log."""
         if not path or not os.path.isfile(path):
@@ -130,11 +137,12 @@ class ComboSim(DualSim):
                     self.against_streaks.setdefault(key, start)
 
     def _record_move(self, window_start, start_price, end_price):
-        if start_price and end_price:
-            self.moves[window_start] = (end_price - start_price) / start_price * 100
+        self.price_structure.record_move(window_start, start_price, end_price)
 
     def _streak_before(self, window_start):
-        """(count, side) of the same winner in a row ending with the last window; None when not known."""
+        """(count, side) of the same winner in a row ending with the last window; None only when the last
+        window itself is not known. A missing older window ends the streak at the known length (so joining
+        late still counts the recent run)."""
         step = self.duration * 60
         last = self.history.get(window_start - step)
         if not last or last[0] is None:
@@ -145,7 +153,7 @@ class ComboSim(DualSim):
         while count < 50:
             entry = self.history.get(start)
             if not entry or entry[0] is None:
-                return None
+                break
             if entry[0] != last[0]:
                 break
             count, start = count + 1, start - step

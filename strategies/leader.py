@@ -1,15 +1,15 @@
-"""Leader strategy, built on the dual simulator (dual.py), logged to the same trades format.
+"""Leader strategy, built on BaseSim (sim.py), logged to the same trades format.
 
 Trades only after a last-window move of ``min_prev_move_pct``% or more (a trending, non-dual window). Then it
 watches from ``watch_from_pct`` to ``watch_to_pct`` of the window (1:00-2:00 into 5m) for the first side whose bid
 (1 - the other side's ask) reaches ``leader_at_cents`` there (and not before), buys it at once at its ask (a taker
 fill, skipped above ``leader_max_cents``) and holds to the end. No order on the other side, no hedge, cancel or
 stop-loss. No leader: skipped."""
-from dual import DualSim, Order
+from sim import BaseSim, Order
 from logs import format_time
 
 
-class LeaderSim(DualSim):
+class LeaderSim(BaseSim):
     strategy = "leader"
     start_mode = "leader"
 

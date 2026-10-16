@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Fake-tick checks for dual.py and the log formats. Run: python test_dual.py"""
+"""Fake-tick checks for sim/strategies and the log formats. Run: python test_dual.py"""
 import csv
 import os
 import tempfile
 
-from against import AgainstSim
-from combo import ComboSim
-from dual import TRADES_HEADER, DualSim, last_capital_after, last_reloaded_total
-from leader import LeaderSim
 from logs import MARKET_CSV_HEADER, format_lowest_cents, log_to_csv
 from predict_feed import best_asks, book_depth, get_current_active_slug, window_bounds
+from sim import TRADES_HEADER, last_capital_after, last_reloaded_total
+from strategies import AgainstSim, ComboSim, DualSim, LeaderSim
 
 START = 1791813600  # 14:00 UTC = 10am ET
 END = START + 300
@@ -740,6 +738,21 @@ def test_regime_history_from_log(tmp):
     assert loaded.regime_decision(START + 600) == ("dual", "dual_in_last_3")
 
 
+def test_load_updown_fills_streak_gaps(tmp):
+    updown = os.path.join(tmp, "btc-5-updown.csv")
+    with open(updown, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Time stamp", "price_to_beat", "final_price", "lowest_up", "lowest_down", "outcome"])
+        w.writerow([START - 900, "$100.00", "$99.00", "10¢", "40¢", "Down"])
+        w.writerow([START - 600, "$99.00", "$98.00", "5¢", "50¢", "Down"])
+        w.writerow([START - 300, "$98.00", "$97.00", "8¢", "45¢", "Down"])
+    sim = against_sim(tmp)
+    sim.load_updown(updown)
+    assert sim.history[START - 300][0] == "Down"
+    assert sim._streak_before(START) == (3, "Down")
+    assert round(sim.moves[START - 300], 4) == round((97 - 98) / 98 * 100, 4)
+
+
 # Up's bid (1 - Down ask) first reaches 61¢ at 1:10 in; Up then dips to 51¢ (fills at 52¢), Down to 21¢ (fills at 25¢)
 LEADER_TICKS = [(0, 0.50, 0.51), (30, 0.55, 0.46), (70, 0.62, 0.39), (100, 0.51, 0.50), (200, 0.80, 0.21),
                 (250, 0.85, 0.16)]
@@ -828,6 +841,7 @@ def main():
             test_combo_continue,
             test_combo_trend,
             test_regime_history_from_log,
+            test_load_updown_fills_streak_gaps,
             test_leader_bought_at_ask,
             test_leader_skips,
         ):
