@@ -1,22 +1,32 @@
-"""against: when exactly ``against_min_streak`` same winners in a row, buy the other side only when the streak is
-against the recent price structure (the weak / non-trending side) and RSI agrees with that structure
-(up → RSI > ``rsi_agree_up``, down → RSI < ``rsi_agree_down``). A streak that goes with the structure, mixed /
-unknown structure, or RSI mid/disagree/unknown is skipped. One bet per streak: a streak that keeps going is
-skipped until it breaks. ``min_move_vs_avg`` (default 0 = off) can require the last move to be that many times
-the average of the last ``avg_windows``; it is always logged. ``take_profit_all`` puts a resting sell limit on
-every bet; ``take_profit_cents=0`` turns it off. Same rules for every window duration."""
+"""against: when exactly ``against_min_streak`` same winners in a row, buy the other side.
+
+Filter modes (``against_filter``):
+- ``struct_rsi`` (default): streak must be against clear structure and RSI must agree with that structure
+  (up → RSI > ``rsi_agree_up``, down → RSI < ``rsi_agree_down``). With-structure / mixed / unknown /
+  RSI mid/disagree/unknown → skip.
+- ``bare``: no structure/RSI gate — every exact-N streak (still skip not-broken). Structure/RSI are logged.
+- ``rsi``: no structure gate — use RSI as trend and do not fade against it (bet Up only if RSI >
+  ``rsi_agree_up``, bet Down only if RSI < ``rsi_agree_down``). Mid/unknown RSI → skip.
+
+One bet per streak: a streak that keeps going is skipped until it breaks. ``min_move_vs_avg`` (default 0 = off)
+can require the last move to be that many times the average of the last ``avg_windows``; it is always logged.
+``take_profit_all`` puts a resting sell limit on every bet; ``take_profit_cents=0`` turns it off."""
 from logs import format_time
 from .combo import ComboSim
 
-# RSI must lean with structure: up needs RSI above this, down needs RSI below this.
+# RSI must lean with structure (struct_rsi) or with the bet side (rsi filter).
 RSI_AGREE_UP = 55
 RSI_AGREE_DOWN = 45
+AGAINST_FILTERS = ("struct_rsi", "bare", "rsi")
 
 
 class AgainstSim(ComboSim):
     def __init__(self, *args, take_profit_cents=85, take_profit_all=False, min_move_vs_avg=0.0, avg_windows=24,
-                 rsi_windows=14, rsi_agree_up=RSI_AGREE_UP, rsi_agree_down=RSI_AGREE_DOWN, **kwargs):
+                 rsi_windows=14, rsi_agree_up=RSI_AGREE_UP, rsi_agree_down=RSI_AGREE_DOWN,
+                 against_filter="struct_rsi", **kwargs):
         kwargs.pop("trend_windows", None)
+        if against_filter not in AGAINST_FILTERS:
+            raise ValueError(f"unknown against_filter {against_filter!r}; want one of {AGAINST_FILTERS}")
         super().__init__(*args, strategy="against", trend_windows=0, avg_windows=avg_windows,
                          rsi_windows=rsi_windows, **kwargs)
         self.take_profit_cents = take_profit_cents
@@ -24,17 +34,28 @@ class AgainstSim(ComboSim):
         self.min_move_vs_avg = min_move_vs_avg
         self.rsi_agree_up = rsi_agree_up
         self.rsi_agree_down = rsi_agree_down
+        self.against_filter = against_filter
 
     def summarize(self):
         capital = f"capital ${self.capital:.2f} ({self.capital_source})"
         vs_avg = (f" when the last window moved at least {self.min_move_vs_avg:g}x the average of the last "
                   f"{self.avg_windows} windows" if self.min_move_vs_avg > 0 else "")
+        if self.against_filter == "bare":
+            gate = "with no structure/RSI filter (bare exact-streak)"
+            skip = "not-broken streaks only"
+        elif self.against_filter == "rsi":
+            gate = (f"with RSI-as-trend only (buy Up only if RSI>{self.rsi_agree_up:g}, "
+                    f"Down only if RSI<{self.rsi_agree_down:g}; no structure gate)")
+            skip = "RSI mid/unknown / fade-against-RSI"
+        else:
+            gate = (f"against the price structure (non-trending side) with RSI agreeing "
+                    f"(up>{self.rsi_agree_up:g} / down<{self.rsi_agree_down:g})")
+            skip = "trending-side streak / mixed / unknown / RSI mid or disagree"
         return (
-            f"🎯 Against: at exactly {self.against_min_streak} same winners in a row against the price structure "
-            f"(non-trending side) with RSI agreeing (up>{self.rsi_agree_up:g} / down<{self.rsi_agree_down:g})"
-            f"{vs_avg}, buy {self.contracts} of the other side (≤{self.against_max_cents}¢); "
-            f"trending-side streak / mixed / unknown / RSI mid or disagree → skip; a streak that keeps going is "
-            f"not bet again until it breaks; {self._take_profit_text()} | {capital}"
+            f"🎯 Against [{self.against_filter}]: at exactly {self.against_min_streak} same winners in a row "
+            f"{gate}{vs_avg}, buy {self.contracts} of the other side (≤{self.against_max_cents}¢); "
+            f"{skip} → skip; a streak that keeps going is not bet again until it breaks; "
+            f"{self._take_profit_text()} | {capital}"
         )
 
     def _take_profit_text(self):
@@ -69,7 +90,7 @@ class AgainstSim(ComboSim):
             return "skip", f"streak_{n}_{side.lower()}_not_broken"
         if prev_move_pct is None:
             return "skip", "prev_move_unknown"
-        reason = f"streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
+        reason = f"filter_{self.against_filter}_streak_{n}_{side.lower()}_move_{prev_move_pct:+.3f}pct"
         if vs_avg is not None:
             reason += f"_{vs_avg:.2f}x_avg"
         if self.min_move_vs_avg > 0:
@@ -77,36 +98,62 @@ class AgainstSim(ComboSim):
                 return "skip", f"{reason}_avg_move_unknown"
             if vs_avg < self.min_move_vs_avg - 1e-9:
                 return "skip", reason
-        if not structure:
-            return "skip", f"{reason}_structure_unknown"
-        reason += f"_structure_{structure}"
-        if structure == "mixed":
-            return "skip", reason
-        # only fade streaks on the non-trending side; skip streaks that go with the structure
-        if structure == side.lower():
-            return "skip", f"{reason}_with_structure"
-        if rsi is None:
-            return "skip", f"{reason}_rsi_unknown"
-        reason += f"_rsi_{rsi:.0f}"
-        if structure == "up":
-            if rsi > self.rsi_agree_up + 1e-9:
-                pass  # RSI agrees with up structure
-            elif rsi < self.rsi_agree_down - 1e-9:
-                return "skip", f"{reason}_rsi_disagree"
-            else:
-                return "skip", f"{reason}_rsi_mid"
-        else:  # down
-            if rsi < self.rsi_agree_down - 1e-9:
-                pass  # RSI agrees with down structure
-            elif rsi > self.rsi_agree_up + 1e-9:
-                return "skip", f"{reason}_rsi_disagree"
-            else:
-                return "skip", f"{reason}_rsi_mid"
+        # Always tag structure/RSI in the reason when known (for log comparison across filters).
+        if structure:
+            reason += f"_structure_{structure}"
+        if rsi is not None:
+            reason += f"_rsi_{rsi:.0f}"
+
+        bet = "Down" if side == "Up" else "Up"
+        if self.against_filter == "bare":
+            pass  # exact-N only; structure/RSI logged above
+        elif self.against_filter == "rsi":
+            # RSI = trend: only fade when the bet agrees with RSI (don't bet against the RSI trend).
+            if rsi is None:
+                return "skip", f"{reason}_rsi_unknown"
+            if bet == "Up":
+                if rsi > self.rsi_agree_up + 1e-9:
+                    pass
+                elif rsi < self.rsi_agree_down - 1e-9:
+                    return "skip", f"{reason}_rsi_against_trend"
+                else:
+                    return "skip", f"{reason}_rsi_mid"
+            else:  # bet Down
+                if rsi < self.rsi_agree_down - 1e-9:
+                    pass
+                elif rsi > self.rsi_agree_up + 1e-9:
+                    return "skip", f"{reason}_rsi_against_trend"
+                else:
+                    return "skip", f"{reason}_rsi_mid"
+        else:  # struct_rsi (default)
+            if not structure:
+                return "skip", f"{reason}_structure_unknown"
+            if structure == "mixed":
+                return "skip", reason
+            # only fade streaks on the non-trending side; skip streaks that go with the structure
+            if structure == side.lower():
+                return "skip", f"{reason}_with_structure"
+            if rsi is None:
+                return "skip", f"{reason}_rsi_unknown"
+            if structure == "up":
+                if rsi > self.rsi_agree_up + 1e-9:
+                    pass  # RSI agrees with up structure
+                elif rsi < self.rsi_agree_down - 1e-9:
+                    return "skip", f"{reason}_rsi_disagree"
+                else:
+                    return "skip", f"{reason}_rsi_mid"
+            else:  # down
+                if rsi < self.rsi_agree_down - 1e-9:
+                    pass  # RSI agrees with down structure
+                elif rsi > self.rsi_agree_up + 1e-9:
+                    return "skip", f"{reason}_rsi_disagree"
+                else:
+                    return "skip", f"{reason}_rsi_mid"
         take_profit = self.take_profit_cents > 0 and self.take_profit_all
         if take_profit:
             reason += f"_tp_{self.take_profit_cents}c"
         if here:
-            state.bet_side = "Down" if side == "Up" else "Up"
+            state.bet_side = bet
             state.take_profit = self.take_profit_cents / 100 if take_profit else 0.0
         return "against", reason
 

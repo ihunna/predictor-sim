@@ -540,20 +540,22 @@ def test_against_move_vs_average(tmp):
     sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
                    START - 1200: ["Down", True]}
     state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
-    assert sim.regime_decision(START, None, 0.05) == ("skip", "streak_3_up_move_+0.050pct_avg_move_unknown")
+    assert sim.regime_decision(START, None, 0.05) == (
+        "skip", "filter_struct_rsi_streak_3_up_move_+0.050pct_avg_move_unknown")
     sim.moves = up_structure_moves(12)
     # Up streak with up structure is the trending side → skip; need a Down streak to bet
     assert sim.regime_decision(START, None, 0.05) == (
-        "skip", "streak_3_up_move_+0.050pct_1.00x_avg_structure_up_with_structure")
+        "skip", "filter_struct_rsi_streak_3_up_move_+0.050pct_1.00x_avg_structure_up_rsi_100_with_structure")
     assert round(state.avg_move_pct, 6) == 0.05 and round(state.move_vs_avg, 6) == 1.0 and state.structure == "up"
     sim.history = {START - 300: ["Down", False], START - 600: ["Down", False], START - 900: ["Down", True],
                    START - 1200: ["Up", True]}
     assert sim.regime_decision(START, None, -0.05) == (
-        "against", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_75")
+        "against", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_75")
     assert state.bet_side == "Up" and state.rsi is not None
     sim.moves[START - 300] = -0.02  # last move now under the average
     assert sim.regime_decision(START, None, None)[0] == "skip"
-    assert sim.regime_decision(START, None, -0.02) == ("skip", "streak_3_down_move_-0.020pct_0.42x_avg")
+    assert sim.regime_decision(START, None, -0.02) == (
+        "skip", "filter_struct_rsi_streak_3_down_move_-0.020pct_0.42x_avg")
     assert round(state.move_vs_avg, 2) == 0.42
     row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
     assert row["move_vs_avg"] == "0.42" and row["structure"] == "up" and row["rsi_14"]
@@ -572,9 +574,9 @@ def test_against_exactly_three_and_take_profit(tmp):
     state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
     # Down streak against up structure + RSI agree → buy Up (move vs avg is logged, not required)
     assert sim.regime_decision(START, None, -0.01) == (
-        "against", "streak_3_down_move_-0.010pct_0.21x_avg_structure_up_rsi_76")
+        "against", "filter_struct_rsi_streak_3_down_move_-0.010pct_0.21x_avg_structure_up_rsi_76")
     assert sim.regime_decision(START, None, -0.05) == (
-        "against", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71")
+        "against", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71")
     assert state.bet_side == "Up" and state.take_profit == 0
     # the streak kept going: skipped until it breaks
     sim.history[START] = ["Down", False]
@@ -587,7 +589,7 @@ def test_against_exactly_three_and_take_profit(tmp):
     sim.moves = up_structure_moves()
     state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
     assert sim.regime_decision(START, None, -0.05) == (
-        "against", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71_tp_85c")
+        "against", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71_tp_85c")
     assert state.take_profit == 0.85 and state.bet_side == "Up"
     sim.resolve_decision(state, None, mode="against")
     for offset, up, down in ((1, 0.48, 0.53), (100, 0.86, 0.16), (150, 0.87, 0.14), (290, 0.04, 0.97)):
@@ -603,7 +605,7 @@ def test_against_exactly_three_and_take_profit(tmp):
     sim.moves = up_structure_moves()
     state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
     assert sim.regime_decision(START, None, -0.05) == (
-        "against", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71")
+        "against", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71")
     assert state.take_profit == 0
 
 
@@ -613,24 +615,25 @@ def test_against_structure(tmp):
                 START - 1200: ["Down", True]}
     sim.history = dict(three_up)
     state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
-    assert sim.regime_decision(START, None, 0.05) == ("skip", "streak_3_up_move_+0.050pct_structure_unknown")
+    assert sim.regime_decision(START, None, 0.05) == (
+        "skip", "filter_struct_rsi_streak_3_up_move_+0.050pct_structure_unknown")
     # Up streak with up structure → trending side → skip
     sim.moves = up_structure_moves()
     assert sim.regime_decision(START, None, 0.05) == (
-        "skip", "streak_3_up_move_+0.050pct_1.00x_avg_structure_up_with_structure")
+        "skip", "filter_struct_rsi_streak_3_up_move_+0.050pct_1.00x_avg_structure_up_rsi_79_with_structure")
     assert state.structure == "up"
     # Down streak against an up structure + RSI agree → against (buy Up)
     sim.history = {START - 300: ["Down", False], START - 600: ["Down", False], START - 900: ["Down", True],
                    START - 1200: ["Up", True]}
     sim.moves = up_structure_moves()
     assert sim.regime_decision(START, None, -0.05) == (
-        "against", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71")
+        "against", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_71")
     assert state.bet_side == "Up"
     # choppy moves → mixed → skip
     sim.history = dict(three_up)
     sim.moves = {START - i * 300: (0.05 if i % 2 else -0.05) for i in range(1, 13)}
     assert sim.regime_decision(START, None, 0.05) == (
-        "skip", "streak_3_up_move_+0.050pct_1.00x_avg_structure_mixed")
+        "skip", "filter_struct_rsi_streak_3_up_move_+0.050pct_1.00x_avg_structure_mixed")
     assert state.structure == "mixed"
 
 
@@ -645,7 +648,7 @@ def test_against_rsi_agree(tmp):
     state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
     sim.moves = up_structure_moves(12)
     assert sim.regime_decision(START, None, -0.05) == (
-        "skip", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_unknown")
+        "skip", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_unknown")
     assert state.rsi is None and state.structure == "up"
 
     # mid / disagree / agree with a short RSI window so fixtures control the lean
@@ -659,20 +662,52 @@ def test_against_rsi_agree(tmp):
     sim.moves[START - 900] = 0.05
     sim.moves[START - 1200] = -0.05
     assert sim.regime_decision(START, None, -0.05) == (
-        "skip", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_50_rsi_mid")
+        "skip", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_50_rsi_mid")
     assert round(state.rsi) == 50
 
     sim.moves = up_structure_moves(12)
     for i in range(1, 5):
         sim.moves[START - i * 300] = -0.05
     assert sim.regime_decision(START, None, -0.05) == (
-        "skip", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_0_rsi_disagree")
+        "skip", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_0_rsi_disagree")
     assert state.rsi == 0.0
 
     sim.moves = up_structure_moves(12)
     assert sim.regime_decision(START, None, -0.05) == (
-        "against", "streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_75")
+        "against", "filter_struct_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_75")
     assert state.bet_side == "Up"
+
+
+def test_against_filter_bare_and_rsi(tmp):
+    """bare takes every exact-3; rsi only fades with the RSI trend (not against it)."""
+    three_up = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
+                START - 1200: ["Down", True]}
+    three_down = {START - 300: ["Down", False], START - 600: ["Down", False], START - 900: ["Down", True],
+                  START - 1200: ["Up", True]}
+
+    bare = against_sim(tmp, avg_windows=12, against_filter="bare")
+    bare.history = dict(three_up)
+    state = bare.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    # with-structure would skip on struct_rsi; bare still takes
+    bare.moves = up_structure_moves()
+    assert bare.regime_decision(START, None, 0.05) == (
+        "against", "filter_bare_streak_3_up_move_+0.050pct_1.00x_avg_structure_up_rsi_79")
+    assert state.bet_side == "Down"
+    bare.history[START] = ["Up", False]
+    assert bare.regime_decision(START + 300, None, 0.05) == ("skip", "streak_4_up_not_broken")
+
+    rsi = against_sim(tmp, avg_windows=12, rsi_windows=4, against_filter="rsi")
+    rsi.history = dict(three_down)
+    state = rsi.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    rsi.moves = up_structure_moves(12)
+    # fade Down → bet Up, RSI high → with trend → take (no structure required)
+    assert rsi.regime_decision(START, None, -0.05) == (
+        "against", "filter_rsi_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_75")
+    assert state.bet_side == "Up"
+    rsi.history = dict(three_up)
+    # fade Up → bet Down while RSI high → against RSI trend → skip
+    assert rsi.regime_decision(START, None, 0.05) == (
+        "skip", "filter_rsi_streak_3_up_move_+0.050pct_1.00x_avg_structure_up_rsi_100_rsi_against_trend")
 
 
 def test_combo_strategy(tmp):

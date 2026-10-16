@@ -345,12 +345,16 @@ def parse_args():
                              "--leader-at in the watch period at its ask, held to the end (own trades file). "
                              "regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
                              "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
-                             "no duals. against: at exactly --against-min-streak in a row against the price structure "
-                             "(non-trending side) with RSI agreeing (up>55 / down<45), buy the other side once per "
-                             "streak; with-structure/mixed/RSI mid or disagree → skip. "
+                             "no duals. against: at exactly --against-min-streak in a row, buy the other side once "
+                             "per streak (see --against-filter). "
                              "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
                              "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
                              "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
+    parser.add_argument("--against-filter", choices=("struct_rsi", "bare", "rsi"), default="struct_rsi",
+                        help="Against only. struct_rsi (default): against clear structure + RSI agree with structure. "
+                             "bare: every exact streak, skip only not-broken (no struct/RSI gate; own trades file). "
+                             "rsi: no structure gate; only fade when the bet agrees with RSI as trend "
+                             "(Up if RSI>55, Down if RSI<45; mid/unknown skip; own trades file).")
     parser.add_argument("--against-min-streak", type=int, default=3, metavar="WINDOWS",
                         help="Against: bet at exactly this many same winners in a row; combo: this many or more "
                              "(default 3).")
@@ -473,7 +477,11 @@ def main():
     if not 0 <= args.watch_from_pct < args.watch_to_pct < 100:
         raise SystemExit("--watch-from-pct must be below --watch-to-pct, both between 0 and 100")
     if strategy in ("leader", "fav", "against", "combo"):
-        trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
+        if strategy == "against" and args.against_filter != "struct_rsi":
+            # alt against variants get their own log so they can run beside live struct_rsi
+            trades_file = f"{coin}-{duration}-predict-against-{args.against_filter}-trades.csv"
+        else:
+            trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
     else:
         trades_file = dual_trades_file
     if args.capital_last is not None:
@@ -499,7 +507,8 @@ def main():
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
                          take_profit_cents=args.take_profit_at, take_profit_all=args.take_profit_all,
-                         min_move_vs_avg=args.move_vs_avg, avg_windows=args.avg_windows)
+                         min_move_vs_avg=args.move_vs_avg, avg_windows=args.avg_windows,
+                         against_filter=args.against_filter)
     else:
         sim = ComboSim(*sim_args, **common, strategy=strategy, fav_max_cents=args.fav_max,
                        dual_lookback=args.dual_lookback, against_min_streak=args.against_min_streak,
