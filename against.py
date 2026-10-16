@@ -1,7 +1,7 @@
 """against: when exactly ``against_min_streak`` same winners in a row and the last window moved enough (at least
 ``against_min_move_pct``% and ``min_move_vs_avg`` times the average move of the last ``avg_windows``), buy the other
-side only when the streak goes with the recent price structure (higher highs and lows = up, lower highs and lows =
-down). A bounce against that structure, mixed structure or unknown structure is skipped. One bet per streak: a streak
+side only when the streak is against the recent price structure (the weak / non-trending side). A streak that goes
+with the structure (trending side), mixed structure or unknown structure is skipped. One bet per streak: a streak
 that keeps going is skipped until it breaks. ``take_profit_all`` puts a resting sell limit on every bet;
 ``take_profit_cents=0`` turns it off. Structure, RSI and move-vs-average are logged on every window. Same rules for
 every window duration."""
@@ -19,6 +19,10 @@ class AgainstSim(ComboSim):
         self.min_move_vs_avg = min_move_vs_avg
         self.avg_windows = avg_windows
         self.rsi_windows = rsi_windows
+        self.structure = ""  # last known: "up" | "down" | "mixed" | ""
+        self.avg_move_pct = None
+        self.move_vs_avg = None
+        self.rsi = None
 
     def _recent_moves(self, window_start, count):
         """The moves (%) of the ``count`` windows before ``window_start``, oldest first, None for a missing one;
@@ -58,10 +62,11 @@ class AgainstSim(ComboSim):
         vs_avg = (f" and at least {self.min_move_vs_avg:g}x the average move of the last {self.avg_windows} windows"
                   if self.min_move_vs_avg > 0 else "")
         return (
-            f"🎯 Against: at exactly {self.against_min_streak} same winners in a row with the price structure, when "
-            f"the last window moved {self.against_min_move_pct:.2f}%+{vs_avg}, buy {self.contracts} of the other side "
-            f"(≤{self.against_max_cents}¢); bounce / mixed / unknown structure → skip; a streak that keeps going is "
-            f"not bet again until it breaks; {self._take_profit_text()} | {capital}"
+            f"🎯 Against: at exactly {self.against_min_streak} same winners in a row against the price structure "
+            f"(non-trending side), when the last window moved {self.against_min_move_pct:.2f}%+{vs_avg}, buy "
+            f"{self.contracts} of the other side (≤{self.against_max_cents}¢); trending-side streak / mixed / "
+            f"unknown → skip; a streak that keeps going is not bet again until it breaks; "
+            f"{self._take_profit_text()} | {capital}"
         )
 
     def _take_profit_text(self):
@@ -81,6 +86,7 @@ class AgainstSim(ComboSim):
         here = state is not None and state.window_start == window_start
         avg, rsi, structure = self.move_stats(window_start, streak[0] if streak else 0)
         vs_avg = abs(prev_move_pct) / avg if prev_move_pct is not None and avg else None
+        self.avg_move_pct, self.move_vs_avg, self.rsi, self.structure = avg, vs_avg, rsi, structure
         if here:
             state.streak_before = f"{streak[0]} {streak[1]}" if streak else "unknown"
             state.avg_move_pct, state.move_vs_avg, state.rsi, state.structure = avg, vs_avg, rsi, structure
@@ -107,8 +113,9 @@ class AgainstSim(ComboSim):
         reason += f"_structure_{structure}"
         if structure == "mixed":
             return "skip", reason
-        if structure != side.lower():
-            return "skip", f"{reason}_bounce"
+        # only fade streaks on the non-trending side; skip streaks that go with the structure
+        if structure == side.lower():
+            return "skip", f"{reason}_with_structure"
         take_profit = self.take_profit_cents > 0 and self.take_profit_all
         if take_profit:
             reason += f"_tp_{self.take_profit_cents}c"
@@ -116,6 +123,17 @@ class AgainstSim(ComboSim):
             state.bet_side = "Down" if side == "Up" else "Up"
             state.take_profit = self.take_profit_cents / 100 if take_profit else 0.0
         return "against", reason
+
+    def start_window(self, window_start, window_end, slug, market_id, now=None, skip_reason=None,
+                     decision_pending=False):
+        state = super().start_window(window_start, window_end, slug, market_id, now=now,
+                                     skip_reason=skip_reason, decision_pending=decision_pending)
+        streak = self._streak_before(window_start)
+        avg, rsi, structure = self.move_stats(window_start, streak[0] if streak else 0)
+        self.avg_move_pct, self.rsi, self.structure = avg, rsi, structure
+        state.avg_move_pct, state.rsi, state.structure = avg, rsi, structure
+        state.streak_before = f"{streak[0]} {streak[1]}" if streak else "unknown"
+        return state
 
     def _trade_tick(self, state, now, remaining, up_ask, down_ask):
         super()._trade_tick(state, now, remaining, up_ask, down_ask)

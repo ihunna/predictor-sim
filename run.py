@@ -151,6 +151,8 @@ def decide_regime(ui, sim, state, prev_move):
     if sim.strategy in ("against", "combo"):
         moved = f"{prev_move:+.3f}%" if prev_move is not None else "unknown"
         streak = f"streak {state.streak_before}, last window moved {moved}"
+        if sim.strategy == "against":
+            streak += f", structure {state.structure or getattr(sim, 'structure', None) or 'unknown'}"
     else:
         streak = f"streak {state.streak_before}, duals in last {sim.dual_lookback}: {state.recent_duals}"
     if action == "against":
@@ -343,10 +345,10 @@ def parse_args():
                              "--leader-at in the watch period at its ask, held to the end (own trades file). "
                              "regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
                              "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
-                             "no duals. against: at exactly --against-min-streak in a row with the price structure "
-                             "and the last window moved --against-min-move%%+ / --move-vs-avg× the recent average, "
-                             "buy the other side once per streak; bounce/mixed → skip. combo: streaks of 3+ only, "
-                             "bet to break against the trend and to continue with it. (fav, "
+                             "no duals. against: at exactly --against-min-streak in a row against the price structure "
+                             "(non-trending side) and the last window moved --against-min-move%%+ / --move-vs-avg× "
+                             "the recent average, buy the other side once per streak; with-structure/mixed → skip. "
+                             "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
                              "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
                              "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
     parser.add_argument("--against-min-streak", type=int, default=3, metavar="WINDOWS",
