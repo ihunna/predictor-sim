@@ -356,6 +356,7 @@ class Dashboard:
                 Text(f"{format_time(remaining)} left", style="bold cyan"),
             )
             parts.append(window)
+            parts.append(Text(""))
             title_line = Text()
             title_line.append(title_text, style="dim")
             title_line.append("   last window ", style="dim")
@@ -367,6 +368,7 @@ class Dashboard:
             parts.append(title_line)
 
             if sim.strategy == "against":
+                parts.append(Text(""))
                 structure = (state.structure if state.structure else getattr(sim, "structure", None)) or "unknown"
                 struct_line = Text()
                 struct_line.append("Structure ", style="dim")
@@ -386,6 +388,7 @@ class Dashboard:
                     struct_line.append(f"{state.rsi:.0f}", style="bold")
                 parts.append(struct_line)
 
+            parts.append(Text(""))
             price_line = Text()
             price_line.append("PTB ", style="dim")
             price_line.append(format_dollar(ptb) if ptb else "--", style="bold")
@@ -399,6 +402,7 @@ class Dashboard:
             parts.append(price_line)
 
             if not state.trading:
+                parts.append(Text(""))
                 parts.append(Text(f"⏸  Not trading this window: {skip_text(state)}", style="bold yellow"))
 
             def clock(time_left):
