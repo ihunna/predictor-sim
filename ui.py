@@ -545,7 +545,8 @@ class Dashboard:
             tp = (f"take-profit {sim.take_profit_cents}¢" if sim.take_profit_cents > 0 and sim.take_profit_all
                   else "no take-profit")
             vs_avg = f" & ≥{sim.min_move_vs_avg:g}x avg move" if sim.min_move_vs_avg > 0 else ""
-            skip = (f"against: exactly {sim.against_min_streak} against structure{vs_avg} → other side · {tp}")
+            skip = (f"against: exactly {sim.against_min_streak} against structure + RSI agree"
+                    f" (up>{sim.rsi_agree_up:g}/down<{sim.rsi_agree_down:g}){vs_avg} → other side · {tp}")
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "fav":

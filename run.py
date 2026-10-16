@@ -151,6 +151,8 @@ def decide_regime(ui, sim, state, prev_move):
         streak = f"streak {state.streak_before}, last window moved {moved}"
         if sim.strategy == "against":
             streak += f", structure {state.structure or getattr(sim, 'structure', None) or 'unknown'}"
+            if state.rsi is not None:
+                streak += f", RSI {state.rsi:.0f}"
     else:
         streak = f"streak {state.streak_before}, duals in last {sim.dual_lookback}: {state.recent_duals}"
     if action == "against":
@@ -344,7 +346,8 @@ def parse_args():
                              "regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
                              "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
                              "no duals. against: at exactly --against-min-streak in a row against the price structure "
-                             "(non-trending side), buy the other side once per streak; with-structure/mixed → skip. "
+                             "(non-trending side) with RSI agreeing (up>55 / down<45), buy the other side once per "
+                             "streak; with-structure/mixed/RSI mid or disagree → skip. "
                              "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
                              "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
                              "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
