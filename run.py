@@ -13,7 +13,7 @@ import time
 
 from logs import format_lowest_cents, format_time, log_to_csv
 from sim import last_capital_after, last_reloaded_total
-from strategies import AgainstSim, ComboSim, DualSim, LeaderSim, STRATEGIES
+from strategies import AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES
 from predict_feed import (
     CHAINLINK_FEED_IDS,
     SUPPORTED_DURATIONS,
@@ -44,9 +44,9 @@ LEADER_MIN_PREV_MOVE_PCT = {5: 0.10, 15: 0.15, 60: 0.35}  # about the biggest 30
 STREAK_MOVE_PCT_5M = {"against_min_move": 0.02, "continue_max_move": 0.05, "fav_max_move": 0.02,
                       "trend_against_min_move": 0.05}
 MOVE_SCALE = {5: 1.0, 15: 1.5, 60: 3.5}
-# dual quiet entry: 20% into the window (60s on 5m) and |Δ| gate scaled like other move thresholds
-DUAL_ENTER_AFTER_PCT = 0.20
-DUAL_QUIET_MAX_PCT_5M = 0.03
+# dual: watch from open; |Δ| gate for cheap+high signal (scaled by duration)
+DUAL_ENTER_AFTER_PCT = 0.0
+DUAL_QUIET_MAX_PCT_5M = 0.01
 
 # (attempts, poll_seconds): ~1m on 5m, ~2m on 15m, ~10m on 60m for GetMarket resolution fallback
 RESOLUTION_CHECK = {5: (4, 15), 15: (8, 15), 60: (30, 20)}
@@ -367,19 +367,14 @@ def parse_args():
                         help="Leader: start of the watch period, in percent of the window (default 20: 1:00 into 5m).")
     parser.add_argument("--watch-to-pct", type=float, default=40.0,
                         help="Leader: end of the watch period, in percent of the window (default 40: 2:00 into 5m).")
-    parser.add_argument("--strategy", choices=("leader", "regime", "fav", "against", "combo", "dual"), default=None,
-                        help="leader: after a last move of --min-prev-move-pct+, buy the first side to reach "
-                             "--leader-at in the watch period at its ask, held to the end (own trades file). "
-                             "regime: after exactly 2 same winners in a row buy the favourite, else dual if one of "
-                             "the last --dual-lookback windows was a dual, else skip. fav: only the favourite bets, "
-                             "no duals. against: at exactly --against-min-streak in a row, buy the other side once "
-                             "per streak (see --against-filter). "
-                             "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
-                             "against and combo have their own trades file and can run beside another bot.) dual: "
-                             "after --enter-after seconds, if |BTC Δ from PTB| < --quiet-max-pct, if an ask "
-                             "≤ --cheap-ask rest a deep limit @ --cheap-deep (then complement the other after fill), "
-                             "else rest both @ --limit; "
-                             "--max-prev-move-pct still skips wild prior windows. "
+    parser.add_argument("--strategy",
+                        choices=("leader", "regime", "fav", "against", "combo", "dual", "scalp"), default=None,
+                        help="leader / regime / fav / against / combo: see prior docs. "
+                             "dual: when |Δ|≤--quiet-max-pct and an ask ≤--cheap-ask, lift that side and rest the "
+                             "other at --pair-cents−ask (equal size); else optionally both @--limit; flatten "
+                             "stranded cheap by --strand-exit. "
+                             "scalp: buy ask≤--scalp-entry, TP bid≥--scalp-target, time-exit at --scalp-exit-left, "
+                             "wide confirmed stop at --scalp-stop (small pullbacks ignored). "
                              "(default: regime for 5m, dual otherwise)")
 
     parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
@@ -431,22 +426,34 @@ def parse_args():
                              "(default 0 = off; try 0.10 to skip after wild prior windows).")
 
     parser.add_argument("--enter-after", type=int, default=None, metavar="SECONDS_IN",
-                        help="Dual: earliest seconds into the window to evaluate entry "
-                             "(default: 20%% of the window → 60s on 5m, 180s on 15m, 720s on 60m; 0 = from start).")
+                        help="Dual: earliest seconds into the window to watch for entry "
+                             "(default 0 = from open; set e.g. 60 to delay).")
     parser.add_argument("--quiet-max-pct", type=float, default=None, metavar="PCT",
-                        help="Dual: require |BTC move from PTB| below this at entry "
-                             "(default: 0.03%% on 5m, scaled by duration like other move gates → "
-                             "~0.045 on 15m, ~0.105 on 60m; 0 = off).")
+                        help="Dual: max |BTC Δ from PTB| for the cheap+high signal "
+                             "(default: 0.01%% on 5m, scaled by duration; 0 = off).")
 
     parser.add_argument("--cheap-ask", type=int, default=30, metavar="CENTS",
-                        help="Dual: if one ask is at or below this, do not lift — rest --cheap-deep on that side "
-                             "and complement the other only after it fills; else rest both @ --limit "
-                             "(default 30; 0 = always rest both).")
-    parser.add_argument("--cheap-deep", type=int, default=10, metavar="CENTS",
-                        help="Dual: deep limit on the already-cheap side (default 10; 0 = disable deep path).")
+                        help="Dual: trigger when one ask is at or below this — lift it and rest the other at "
+                             "--pair-cents−ask (default 30; 0 = balanced both@limit only).")
+    parser.add_argument("--pair-cents", type=int, default=80, metavar="CENTS",
+                        help="Dual: target pair sum for cheap+other limits (default 80 → ~20¢ lock).")
+    parser.add_argument("--strand-exit", type=int, default=60, metavar="SECONDS_LEFT",
+                        help="Dual: if only one side filled, sell it at bid with this many seconds left "
+                             "(default 60; 0 = hold).")
+    parser.add_argument("--no-balanced-dual", action="store_true",
+                        help="Dual: skip windows that never print the cheap+high signal (no both@limit fallback).")
 
-
-
+    parser.add_argument("--scalp-entry", type=int, default=20, metavar="CENTS",
+                        help="Scalp: buy when a side's ask is at or below this (default 20).")
+    parser.add_argument("--scalp-target", type=int, default=30, metavar="CENTS",
+                        help="Scalp: take-profit when that side's bid reaches this (default 30).")
+    parser.add_argument("--scalp-exit-left", type=int, default=30, metavar="SECONDS_LEFT",
+                        help="Scalp: flatten at bid with this many seconds left if no TP (default 30; 0 = off).")
+    parser.add_argument("--scalp-stop", type=int, default=None, metavar="CENTS",
+                        help="Scalp: hard stop only if bid stays ≤ this for --scalp-stop-confirm seconds "
+                             "(default: half of --scalp-entry; 0 = no hard stop).")
+    parser.add_argument("--scalp-stop-confirm", type=int, default=5, metavar="SECONDS",
+                        help="Scalp: bid must stay ≤ stop this long before stopping (default 5; filters wicks).")
 
     parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
@@ -524,10 +531,20 @@ def main():
         raise SystemExit("--quiet-max-pct must be >= 0")
     if not 0 <= args.cheap_ask < 100:
         raise SystemExit("--cheap-ask must be between 0 and 99")
-    if not 0 <= args.cheap_deep < 100:
-        raise SystemExit("--cheap-deep must be between 0 and 99")
-    if args.cheap_ask and args.cheap_deep and args.cheap_deep > args.cheap_ask:
-        raise SystemExit("--cheap-deep should be at or below --cheap-ask")
+    if not 2 <= args.pair_cents <= 198:
+        raise SystemExit("--pair-cents must be between 2 and 198")
+    if args.strand_exit < 0 or args.strand_exit >= duration * 60:
+        raise SystemExit(f"--strand-exit must be between 0 and {duration * 60 - 1}")
+    if not 1 <= args.scalp_entry < args.scalp_target <= 99:
+        raise SystemExit("--scalp-entry must be < --scalp-target, both 1-99")
+    if args.scalp_exit_left < 0 or args.scalp_exit_left >= duration * 60:
+        raise SystemExit(f"--scalp-exit-left must be between 0 and {duration * 60 - 1}")
+    if args.scalp_stop is None:
+        args.scalp_stop = max(2, args.scalp_entry // 2)
+    if not 0 <= args.scalp_stop < args.scalp_entry:
+        raise SystemExit("--scalp-stop must be 0 (off) or below --scalp-entry")
+    if args.scalp_stop_confirm < 0:
+        raise SystemExit("--scalp-stop-confirm must be >= 0")
     if args.hedge_at and not args.limit < args.hedge_at < 100:
         raise SystemExit("--hedge-at must be above --limit and below 100 (or 0 for off)")
     if not 0 <= args.stop_loss_at < duration * 60:
@@ -545,7 +562,7 @@ def main():
         raise SystemExit("--min-prev-move-pct must be >= 0")
     if not 0 <= args.watch_from_pct < args.watch_to_pct < 100:
         raise SystemExit("--watch-from-pct must be below --watch-to-pct, both between 0 and 100")
-    if strategy in ("leader", "fav", "against", "combo"):
+    if strategy in ("leader", "fav", "against", "combo", "scalp"):
         if strategy == "against" and args.against_filter != "struct_rsi":
             # alt against variants get their own log so they can run beside live struct_rsi
             trades_file = f"{coin}-{duration}-predict-against-{args.against_filter}-trades.csv"
@@ -573,7 +590,12 @@ def main():
     elif strategy == "dual":
         sim = DualSim(*sim_args, **common, enter_after_seconds=args.enter_after,
                       quiet_max_pct=args.quiet_max_pct, cheap_cents=args.cheap_ask,
-                      cheap_deep_cents=args.cheap_deep)
+                      pair_cents=args.pair_cents, strand_exit_seconds=args.strand_exit,
+                      allow_balanced=not args.no_balanced_dual)
+    elif strategy == "scalp":
+        sim = ScalpSim(*sim_args, **common, entry_cents=args.scalp_entry,
+                       target_cents=args.scalp_target, exit_left_seconds=args.scalp_exit_left,
+                       stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm)
     elif strategy == "against":
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,

@@ -571,22 +571,31 @@ class Dashboard:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "dual":
             enter = (f"from {sim.enter_after_seconds}s in"
-                     if getattr(sim, "enter_after_seconds", 0) > 0 else "from start")
-            quiet = (f"|Δ|<{sim.quiet_max_pct:.3f}%"
-                     if getattr(sim, "quiet_max_pct", 0) > 0 else "no quiet gate")
+                     if getattr(sim, "enter_after_seconds", 0) > 0 else "from open")
+            quiet = (f"|Δ|≤{sim.quiet_max_pct:.3f}%"
+                     if getattr(sim, "quiet_max_pct", 0) > 0 else "no Δ gate")
             cheap = getattr(sim, "cheap_cents", 0)
-            edge = max(0, 100 - 2 * sim.limit_cents)
-            deep = getattr(sim, "cheap_deep_cents", 0)
-            path = (f"ask≤{cheap}¢ → deep @{deep}¢ then complement (+{edge}¢) else both @{sim.limit_cents}¢"
-                    if cheap > 0 and deep > 0 else f"both @{sim.limit_cents}¢")
+            pair = getattr(sim, "pair_cents", 80)
+            path = (f"ask≤{cheap}¢ → lift + other @{pair}¢−ask"
+                    if cheap > 0 else f"both @{sim.limit_cents}¢")
             prev = (f"skip prev ≥{sim.max_prev_move_pct:.2f}%"
                     if sim.max_prev_move_pct > 0 else "no prev filter")
             skip = f"{enter} · {quiet} · {path} · {prev}"
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
+        elif sim.strategy == "scalp":
+            skip = (f"buy ≤{sim.entry_cents}¢ · TP {sim.target_cents}¢ · "
+                    f"exit @{sim.exit_left_seconds}s left · stop ≤{sim.stop_cents}¢×{sim.stop_confirm_seconds}s")
+            if state is not None and state.action:
+                skip += f" · now: {state.action}"
         else:
             skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
-        prices = "at ask" if sim.strategy == "leader" else f"{sim.limit_cents}¢"
+        if sim.strategy == "leader":
+            prices = "at ask"
+        elif sim.strategy == "scalp":
+            prices = f"≤{sim.entry_cents}¢→{sim.target_cents}¢"
+        else:
+            prices = f"{sim.limit_cents}¢"
         header = (f"Predict.fun {sim.strategy} · {self.coin.upper()} {self.duration}m · {prices} × {sim.contracts} "
                   f"· {skip}")
         main = Panel(Group(*parts), title=f"[bold]{header}[/bold]", subtitle=datetime.now().strftime("%H:%M:%S"),
