@@ -370,8 +370,8 @@ def parse_args():
     parser.add_argument("--strategy",
                         choices=("leader", "regime", "fav", "against", "combo", "dual", "scalp"), default=None,
                         help="leader / regime / fav / against / combo: see prior docs. "
-                             "dual: when |Δ|≤--quiet-max-pct and an ask ≤--cheap-ask, lift that side and rest the "
-                             "other at --pair-cents−ask (equal size); hold stranded cheap by default. "
+                             "dual: both @--limit (default 30¢) only when BTC structure is mixed "
+                             "(no quiet/skew/enter-after). "
                              "scalp: buy ask≤--scalp-entry, TP bid≥--scalp-target (default 30→60; miss=−entry). "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -424,22 +424,23 @@ def parse_args():
                              "(default 0 = off; try 0.10 to skip after wild prior windows).")
 
     parser.add_argument("--enter-after", type=int, default=None, metavar="SECONDS_IN",
-                        help="Dual: earliest seconds into the window to watch for entry "
-                             "(default 0 = from open; set e.g. 60 to delay).")
+                        help="Dual: earliest seconds into the window to place "
+                             "(default 0 = from open; legacy, unused when structure gate alone).")
     parser.add_argument("--quiet-max-pct", type=float, default=None, metavar="PCT",
-                        help="Dual: max |BTC Δ from PTB| for the cheap+high signal "
-                             "(default: 0.01%% on 5m, scaled by duration; 0 = off).")
+                        help="Dual: max |BTC Δ from PTB| (default 0 = off; dual ignores Δ unless set).")
 
-    parser.add_argument("--cheap-ask", type=int, default=20, metavar="CENTS",
-                        help="Dual: trigger when one ask is at or below this — lift it and rest the other at "
-                             "--pair-cents−ask (default 20 from merged logs; 0 = balanced both@limit only).")
+    parser.add_argument("--cheap-ask", type=int, default=0, metavar="CENTS",
+                        help="Dual: 0 = both @--limit only (default). >0 enables legacy skew lift+complement.")
     parser.add_argument("--pair-cents", type=int, default=70, metavar="CENTS",
-                        help="Dual: target pair sum for cheap+other limits (default 70 → +30¢ lock if both fill).")
+                        help="Dual skew only: target pair sum for cheap+other (default 70).")
     parser.add_argument("--strand-exit", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Dual: if only one side filled, sell it at bid with this many seconds left "
-                             "(default 0 = hold stranded — logs: early flatten wiped EV).")
+                             "(default 0 = hold stranded).")
     parser.add_argument("--balanced-dual", action="store_true",
-                        help="Dual: if no cheap ask prints, also rest both @--limit (off by default — skew only).")
+                        help="Dual skew: if cheap never prints, also rest both @--limit (default dual already "
+                             "rests both when structure is mixed).")
+    parser.add_argument("--dual-structure", default="mixed", metavar="NAME",
+                        help="Dual: only place when PriceStructure equals this (default mixed; empty = any).")
 
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 30; 5m replay).")
@@ -519,15 +520,17 @@ def main():
         raise SystemExit("--max-prev-move-pct must be >= 0")
     move_scale = MOVE_SCALE.get(duration, (duration / 5) ** 0.5)
     if args.enter_after is None:
-        args.enter_after = int(duration * 60 * DUAL_ENTER_AFTER_PCT)
+        args.enter_after = 0 if strategy == "dual" else int(duration * 60 * DUAL_ENTER_AFTER_PCT)
     if args.quiet_max_pct is None:
-        args.quiet_max_pct = round(DUAL_QUIET_MAX_PCT_5M * move_scale, 4)
+        args.quiet_max_pct = 0.0 if strategy == "dual" else round(DUAL_QUIET_MAX_PCT_5M * move_scale, 4)
     if args.enter_after < 0:
         raise SystemExit("--enter-after must be >= 0")
     if args.enter_after >= duration * 60:
         raise SystemExit(f"--enter-after must be below the {duration * 60}s window length")
     if args.quiet_max_pct < 0:
         raise SystemExit("--quiet-max-pct must be >= 0")
+    if getattr(args, "dual_structure", "mixed") not in ("", "mixed", "up", "down"):
+        raise SystemExit("--dual-structure must be mixed, up, down, or empty")
     if not 0 <= args.cheap_ask < 100:
         raise SystemExit("--cheap-ask must be between 0 and 99")
     if not 2 <= args.pair_cents <= 198:
@@ -587,10 +590,15 @@ def main():
                         min_prev_move_pct=args.min_prev_move_pct, watch_from_pct=args.watch_from_pct,
                         watch_to_pct=args.watch_to_pct)
     elif strategy == "dual":
-        sim = DualSim(*sim_args, **common, enter_after_seconds=args.enter_after,
-                      quiet_max_pct=args.quiet_max_pct, cheap_cents=args.cheap_ask,
-                      pair_cents=args.pair_cents, strand_exit_seconds=args.strand_exit,
-                      allow_balanced=args.balanced_dual)
+        # Mixed-structure both@limit: no cancel / stop-loss / quiet / skew by default.
+        dual_common = dict(common)
+        dual_common["cancel_left_pct"] = 0.0
+        dual_common["stop_loss_seconds"] = 0
+        sim = DualSim(*sim_args, **dual_common, require_structure=args.dual_structure,
+                      enter_after_seconds=args.enter_after, quiet_max_pct=args.quiet_max_pct,
+                      cheap_cents=args.cheap_ask, pair_cents=args.pair_cents,
+                      strand_exit_seconds=args.strand_exit,
+                      allow_balanced=True if args.cheap_ask == 0 else args.balanced_dual)
     elif strategy == "scalp":
         sim = ScalpSim(*sim_args, **common, entry_cents=args.scalp_entry,
                        target_cents=args.scalp_target, exit_left_seconds=args.scalp_exit_left,

@@ -570,21 +570,13 @@ class Dashboard:
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "dual":
-            enter = (f"from {sim.enter_after_seconds}s in"
-                     if getattr(sim, "enter_after_seconds", 0) > 0 else "from open")
-            quiet = (f"|Δ|≤{sim.quiet_max_pct:.3f}%"
-                     if getattr(sim, "quiet_max_pct", 0) > 0 else "no Δ gate")
-            cheap = getattr(sim, "cheap_cents", 0)
-            pair = getattr(sim, "pair_cents", 70)
-            path = (f"ask≤{cheap}¢ → lift + other @{pair}¢−ask"
-                    if cheap > 0 else f"both @{sim.limit_cents}¢")
-            strand = ("hold strand" if getattr(sim, "strand_exit_seconds", 0) <= 0
-                      else f"strand @{sim.strand_exit_seconds}s")
-            prev = (f"skip prev ≥{sim.max_prev_move_pct:.2f}%"
-                    if sim.max_prev_move_pct > 0 else "no prev filter")
-            skip = f"{enter} · {quiet} · {path} · {strand} · {prev}"
+            need = getattr(sim, "require_structure", "mixed") or "any"
+            struct = ""
+            if state is not None and getattr(state, "structure", None):
+                struct = f" · now:{state.structure}"
+            skip = f"both @{sim.limit_cents}¢ when structure={need}{struct}"
             if state is not None and state.action:
-                skip += f" · now: {state.action}"
+                skip += f" · {state.action}"
         elif sim.strategy == "scalp":
             tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
             stop = (f"stop ≤{sim.stop_cents}¢×{sim.stop_confirm_seconds}s"
@@ -602,7 +594,7 @@ class Dashboard:
             prices = (f"≤{sim.entry_cents}¢ hold" if getattr(sim, "target_cents", 0) <= 0
                       else f"≤{sim.entry_cents}¢→{sim.target_cents}¢")
         elif sim.strategy == "dual":
-            prices = f"≤{getattr(sim, 'cheap_cents', sim.limit_cents)}¢/{getattr(sim, 'pair_cents', 70)}¢"
+            prices = f"both @{sim.limit_cents}¢"
         else:
             prices = f"{sim.limit_cents}¢"
         header = (f"Predict.fun {sim.strategy} · {self.coin.upper()} {self.duration}m · {prices} × {sim.contracts} "

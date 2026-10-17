@@ -1,16 +1,7 @@
-"""Dual skew: quiet book + cheap ask → lift cheap + rest the other at a lock price.
+"""Dual: rest both sides at the limit, only when BTC structure is mixed.
 
-Merged logs (5m/15m updown + deduped trade windows): best lock setups cluster around
-lift ≤15–20¢ with pair ≈70¢; stranded cheap should be **held** (flatten-to-zero wiped EV).
-
-When |BTC Δ from PTB| ≤ ``quiet_max_pct`` and one ask is ≤ ``cheap_cents``:
-
-* lift ``contracts`` on the cheap side at its ask
-* rest the same size on the other side at ``pair_cents − cheap_ask``
-
-Equal contracts, unequal prices. Default: hold if only the cheap leg fills.
-Optional ``strand_exit_seconds`` flattens early (off by default). Optional balanced
-both@limit via ``allow_balanced`` (off by default). ``run.py`` scales quiet % by duration.
+No quiet-Δ, enter-after, cheap-skew, or prev-move gate by default. Structure comes from
+the shared ``PriceStructure`` (official window moves). Unknown / up / down → skip.
 """
 
 from logs import format_time
@@ -18,14 +9,19 @@ from sim import BaseSim, Order
 
 
 class DualSim(BaseSim):
-    """Event dual: cheap lift + equal-size complement (skew); optional balanced fallback."""
+    """Both limits at ``limit_cents`` when structure == mixed."""
 
     strategy = "dual"
     start_mode = "dual"
 
-    def __init__(self, *args, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=20,
-                 pair_cents=70, strand_exit_seconds=0, allow_balanced=False, **kwargs):
+    def __init__(self, *args, require_structure="mixed", enter_after_seconds=0, quiet_max_pct=0.0,
+                 cheap_cents=0, pair_cents=70, strand_exit_seconds=0, allow_balanced=True, **kwargs):
+        # No mid-window cancel / stop-loss filters unless the caller opts in.
+        kwargs.setdefault("cancel_left_pct", 0.0)
+        kwargs.setdefault("stop_loss_seconds", 0)
+        kwargs.setdefault("max_prev_move_pct", 0.0)
         super().__init__(*args, **kwargs)
+        self.require_structure = (require_structure or "").strip().lower()
         self.enter_after_seconds = max(0, int(enter_after_seconds))
         self.quiet_max_pct = float(quiet_max_pct)
         self.cheap_cents = max(0, int(cheap_cents))
@@ -34,26 +30,13 @@ class DualSim(BaseSim):
         self.allow_balanced = bool(allow_balanced)
 
     def summarize(self):
-        when = "from open" if self.enter_after_seconds <= 0 else f"from {self.enter_after_seconds}s in"
-        quiet = (
-            f"|Δ|≤{self.quiet_max_pct:.3f}% + ask≤{self.cheap_cents}¢"
-            if self.quiet_max_pct > 0 else f"ask≤{self.cheap_cents}¢ (no Δ gate)"
-        )
-        lock = f"lift cheap ×{self.contracts}, other @{self.pair_cents}¢−ask (equal size)"
-        bal = (
-            f"; else both @{self.limit_cents}¢ if still quiet"
-            if self.allow_balanced else "; else skip"
-        )
-        strand = (
-            f"flatten stranded cheap at {format_time(self.strand_exit_seconds)} left"
-            if self.strand_exit_seconds > 0 else "hold stranded cheap"
-        )
-        skip = (
-            f"skip after a last-window move of {self.max_prev_move_pct:.2f}% or more"
-            if self.max_prev_move_pct > 0 else "no prev-move filter"
+        gate = (
+            f"structure={self.require_structure}"
+            if self.require_structure else "any structure"
         )
         return (
-            f"🎯 Dual: {when}, {quiet} → {lock}{bal}; {strand}; {skip} "
+            f"🎯 Dual: both @{self.limit_cents}¢ ×{self.contracts} when {gate} "
+            f"(no Δ / enter-after / skew) "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
 
@@ -75,17 +58,31 @@ class DualSim(BaseSim):
             return None
         return abs(move) <= self.quiet_max_pct + 1e-12
 
+    def _structure_ok(self, state):
+        """Refresh trend from prior windows; require mixed (or whatever require_structure is)."""
+        if not self.require_structure:
+            return True
+        avg, vs_avg, rsi, structure = self.refresh_structure(state.window_start)
+        state.avg_move_pct = avg
+        state.move_vs_avg = vs_avg
+        state.rsi = rsi
+        state.structure = structure or ""
+        return (structure or "").lower() == self.require_structure
+
     def _complement_cents(self, cheap_ask_cents):
         return min(99, max(1, self.pair_cents - cheap_ask_cents))
 
     def _first_orders(self, state, remaining, up_ask, down_ask):
         if not self._gate_ready(state, remaining):
             return []
+        if not self._structure_ok(state):
+            return []
 
         delta_ok = self._delta_ok(state)
         if delta_ok is None:
             return []
 
+        # Optional legacy skew path (only if cheap_cents > 0).
         cheap_thr = self.cheap_cents / 100.0
         min_ask = min(up_ask, down_ask)
         skewed = self.cheap_cents > 0 and min_ask <= cheap_thr + 1e-9
@@ -108,15 +105,14 @@ class DualSim(BaseSim):
         if skewed and not delta_ok:
             return []
 
-        # cheap_cents==0 → balanced-only; otherwise only if --balanced-dual
         if self.cheap_cents > 0 and not self.allow_balanced:
             return []
         if not delta_ok:
             return []
 
         state.action = "dual"
-        state.action_reason = "rest_both"
-        state.notes.append("rest_both")
+        state.action_reason = f"rest_both_structure_{state.structure or 'any'}"
+        state.notes.append(state.action_reason)
         return [
             Order("Up", "main", self.limit, self.contracts, remaining),
             Order("Down", "main", self.limit, self.contracts, remaining),

@@ -24,30 +24,49 @@ def run_window(sim, ticks, start=START, end=END, btc=None, ptb=None):
 
 
 def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=True,
-            stop_loss_min_cents=0, enter_after_seconds=0, quiet_max_pct=0.0, cheap_cents=0):
-    """Default gates off so older dual fill tests stay place-at-start / both-limits."""
+            stop_loss_min_cents=0, enter_after_seconds=0, quiet_max_pct=0.0, cheap_cents=0,
+            require_structure=""):
+    """Default structure gate off so older dual fill tests stay place-at-start / both-limits."""
     return DualSim("btc", 5, 30, 8, place_at, os.path.join(tmp, "trades.csv"), capital, "default",
                    hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds, stop_loss_live=stop_loss_live,
                    stop_loss_min_cents=stop_loss_min_cents, enter_after_seconds=enter_after_seconds,
-                   quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents)
+                   quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents, require_structure=require_structure,
+                   allow_balanced=True, cancel_left_pct=0.0)
 
 
 def quiet_sim(tmp, limit=40, place_at=None, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=20,
-              pair_cents=70, strand_exit_seconds=0, hedge_cents=0, allow_balanced=False):
-    """Live dual: |Δ|≤quiet + ask≤cheap → lift cheap + other @ pair−ask; else both @ limit."""
+              pair_cents=70, strand_exit_seconds=0, hedge_cents=0, allow_balanced=False,
+              require_structure=""):
+    """Legacy skew dual tests: structure gate off unless set."""
     return DualSim("btc", 5, limit, 8, place_at, os.path.join(tmp, "trades.csv"), 100.0, "default",
                    hedge_cents=hedge_cents, enter_after_seconds=enter_after_seconds,
                    quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents, pair_cents=pair_cents,
                    strand_exit_seconds=strand_exit_seconds, allow_balanced=allow_balanced,
-                   cancel_left_pct=0.0)
+                   require_structure=require_structure, cancel_left_pct=0.0)
+
+
+def seed_mixed_moves(sim, window_start, n=24):
+    """First half up, second half down → PriceStructure 'mixed'."""
+    step = sim.duration * 60
+    half = n // 2
+    for i in range(n, 0, -1):
+        # i=n is oldest; first half of series (older) up, newer half down
+        age = n - i  # 0 = oldest
+        sim.moves[window_start - i * step] = 0.10 if age < half else -0.10
+
+
+def seed_up_moves(sim, window_start, n=24):
+    step = sim.duration * 60
+    for i in range(n, 0, -1):
+        sim.moves[window_start - i * step] = 0.05
 
 
 PTB = 100_000.0
 
 
 def test_quiet_dual_rest_both(tmp):
-    """Quiet + balanced book → rest both limits (only when allow_balanced)."""
-    sim = quiet_sim(tmp, limit=40, allow_balanced=True)
+    """Balanced both@limit when structure gate is off (legacy allow_balanced path)."""
+    sim = quiet_sim(tmp, limit=40, cheap_cents=0, allow_balanced=True, quiet_max_pct=0.0)
     state = run_window(sim, [
         (0, 0.50, 0.51),
         (30, 0.50, 0.51),
@@ -56,10 +75,33 @@ def test_quiet_dual_rest_both(tmp):
         (150, 0.62, 0.38),
     ], btc=PTB, ptb=PTB)
     assert state.placed_time_left == 300
-    assert state.action == "dual" and state.action_reason == "rest_both"
-    assert "rest_both" in state.notes
+    assert state.action == "dual" and "rest_both" in state.action_reason
     assert state.fill_type == "both"
     assert not state.up_taker and not state.down_taker
+
+
+def test_dual_both_30_only_when_mixed(tmp):
+    """Default dual: both @30¢ only when structure is mixed."""
+    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
+                  require_structure="mixed", cancel_left_pct=0.0, stop_loss_seconds=0)
+    seed_up_moves(sim, START)
+    state = run_window(sim, [(0, 0.50, 0.51), (60, 0.40, 0.40)], btc=PTB, ptb=PTB)
+    assert state.structure == "up"
+    assert state.placed_time_left is None
+
+    sim2 = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades2.csv"), 100.0, "default",
+                   require_structure="mixed", cancel_left_pct=0.0, stop_loss_seconds=0)
+    seed_mixed_moves(sim2, START)
+    state2 = run_window(sim2, [
+        (0, 0.50, 0.51),
+        (40, 0.29, 0.72),
+        (100, 0.35, 0.66),
+        (200, 0.80, 0.25),
+    ], btc=PTB, ptb=PTB)
+    assert state2.structure == "mixed"
+    assert state2.action == "dual"
+    assert state2.placed_time_left == 300
+    assert any(o.price == 0.30 for o in state2.orders)
 
 
 def test_dual_skew_lift_and_other(tmp):
@@ -324,7 +366,8 @@ def test_decision_pending_holds_orders(tmp):
 
 
 def test_cancel_when_nothing_fills(tmp):
-    sim = new_sim(tmp)
+    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
+                  require_structure="", allow_balanced=True, cancel_left_pct=40.0, stop_loss_seconds=0)
     assert sim.cancel_left_seconds() == 120
     state = sim.start_window(START, END, f"btc-updown-5m-{START}", "1", now=START)
     sim.on_tick(START + 1, 0.50, 0.51)
@@ -343,7 +386,8 @@ def test_cancel_when_nothing_fills(tmp):
     assert state.cancelled_time_left is None and state.fill_type == "both"
     sim.finish_window()
 
-    sim15 = DualSim("btc", 15, 30, 8, None, os.path.join(tmp, "t15.csv"), 100, "test")
+    sim15 = DualSim("btc", 15, 30, 8, None, os.path.join(tmp, "t15.csv"), 100, "test",
+                    require_structure="", cancel_left_pct=40.0)
     assert sim15.cancel_left_seconds() == 360
 
 
@@ -1125,6 +1169,7 @@ def main():
             test_no_fill_and_unknown,
             test_place_at_and_taker_fill,
             test_quiet_dual_rest_both,
+            test_dual_both_30_only_when_mixed,
             test_dual_skew_lift_and_other,
             test_dual_skew_strand_exit,
             test_dual_skew_holds_stranded_by_default,
