@@ -398,9 +398,10 @@ def parse_args():
                         help="Regime: only buy the favourite at this ask or below (default 55).")
     parser.add_argument("--dual-lookback", type=int, default=3, metavar="WINDOWS",
                         help="Regime: trade the dual only if one of this many last windows was a dual (default 3).")
-    parser.add_argument("--max-prev-move-pct", type=float, default=0.10, metavar="PCT",
+    parser.add_argument("--max-prev-move-pct", type=float, default=0.0, metavar="PCT",
                         help="Dual strategy: skip trading a window when the last one moved this many percent or more "
-                             "(default 0.10; 0 = off).")
+                             "(default 0 = off; try 0.10 to skip after wild prior windows).")
+
     parser.add_argument("--enter-after", type=int, default=60, metavar="SECONDS_IN",
                         help="Dual: earliest seconds into the window to evaluate entry (default 60; 0 = from start).")
     parser.add_argument("--quiet-max-pct", type=float, default=0.03, metavar="PCT",

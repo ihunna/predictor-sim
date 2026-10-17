@@ -514,7 +514,7 @@ class BaseSim:
     start_mode = "dual"  # WindowState.mode at the start of each window
 
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
-                 max_prev_move_pct=0.10, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
+                 max_prev_move_pct=0.0, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds

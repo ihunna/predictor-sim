@@ -28,8 +28,10 @@ class DualSim(BaseSim):
             f"|Δ|<{self.quiet_max_pct:.3f}% from PTB"
             if self.quiet_max_pct > 0 else "no quiet gate"
         )
+        edge = max(0, 100 - 2 * self.limit_cents)
         lift = (
-            f"lift ask≤{self.cheap_cents}¢ then limit other @ {self.limit_cents}¢, else both @ {self.limit_cents}¢"
+            f"lift ask≤{self.cheap_cents}¢, other limit complements to +{edge}¢ lock; "
+            f"else both @ {self.limit_cents}¢"
             if self.cheap_cents > 0 else f"both limits @ {self.limit_cents}¢"
         )
         skip = (
@@ -74,13 +76,16 @@ class DualSim(BaseSim):
                 cheap_side, cheap_ask, other = "Up", up_ask, "Down"
             else:
                 cheap_side, cheap_ask, other = "Down", down_ask, "Up"
-            cents = int(round(cheap_ask * 100))
+            cheap_cents = int(round(cheap_ask * 100))
+            # Same locked edge as resting both @ limit: other = (2*limit) - cheap
+            other_cents = min(99, max(self.limit_cents, 2 * self.limit_cents - cheap_cents))
+            other_limit = other_cents / 100.0
             state.action = "dual_lift"
-            state.action_reason = f"lift_{cheap_side.lower()}_{cents}c"
+            state.action_reason = f"lift_{cheap_side.lower()}_{cheap_cents}c_other_{other_cents}c"
             state.notes.append(state.action_reason)
             return [
                 Order(cheap_side, "main", cheap_ask, self.contracts, remaining),
-                Order(other, "main", self.limit, self.contracts, remaining),
+                Order(other, "main", other_limit, self.contracts, remaining),
             ]
 
         state.action = "dual"

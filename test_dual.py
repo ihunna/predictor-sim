@@ -62,22 +62,23 @@ def test_quiet_dual_rest_both(tmp):
 
 
 def test_quiet_dual_lift_cheap(tmp):
-    """At entry, one ask ≤30¢ → buy it at ask, limit the other."""
+    """At entry, one ask ≤30¢ → buy it at ask; other limit complements to same lock as 40/40."""
     sim = quiet_sim(tmp, limit=40)
     state = run_window(sim, [
         (0, 0.50, 0.51),
-        (60, 0.28, 0.73),  # Up really cheap at entry
-        (120, 0.70, 0.38),  # Down later hits limit
+        (60, 0.28, 0.73),  # Up really cheap at entry → other limit = 80-28 = 52¢
+        (120, 0.70, 0.48),  # Down hits 48 ≤ 52
     ], btc=PTB, ptb=PTB)
     assert state.placed_time_left == 240
     assert state.action == "dual_lift"
-    assert state.action_reason == "lift_up_28c"
+    assert state.action_reason == "lift_up_28c_other_52c"
     assert state.up_taker and state.up_fill_price == 0.28
-    assert state.down_fill_time_left == 180 and not state.down_taker
+    # other rests @52¢; later ask 48 fills as maker at the limit (not the ask)
+    assert state.down_fill_time_left == 180 and state.down_fill_price == 0.52 and not state.down_taker
     assert state.fill_type == "both"
     row = sim.settle(state, "Down", PTB, PTB, 0.0)
-    # cost 0.28*8 + 0.40*8 = 5.44; payout 8 → +2.56
-    assert row["pnl"] == "2.5600", row["pnl"]
+    # cost 0.28*8 + 0.52*8 = 6.40; payout 8 → +1.60  (+20¢/pair, same lock as both @40)
+    assert row["pnl"] == "1.6000", row["pnl"]
 
 
 def test_quiet_dual_skips_loud_delta(tmp):
@@ -182,13 +183,14 @@ def test_no_ptb_not_traded_even_on_time(tmp):
 
 def test_prev_move_filter(tmp):
     sim = new_sim(tmp)
-    assert sim.max_prev_move_pct == 0.10
+    assert sim.max_prev_move_pct == 0.0
+    assert sim.prev_move_skip_reason(5.0) is None
+    assert sim.prev_move_skip_reason(None) is None
+    sim.max_prev_move_pct = 0.10
     assert sim.prev_move_skip_reason(0.05) is None
     assert sim.prev_move_skip_reason(None) == "prev_move_unknown"
     assert sim.prev_move_skip_reason(0.10) == "prev_move_+0.100pct"
     assert sim.prev_move_skip_reason(-0.25) == "prev_move_-0.250pct"
-    sim.max_prev_move_pct = 0
-    assert sim.prev_move_skip_reason(5.0) is None
 
 
 def test_decision_pending_holds_orders(tmp):

@@ -575,8 +575,9 @@ class Dashboard:
             quiet = (f"|Δ|<{sim.quiet_max_pct:.3f}%"
                      if getattr(sim, "quiet_max_pct", 0) > 0 else "no quiet gate")
             cheap = getattr(sim, "cheap_cents", 0)
-            path = (f"lift ≤{cheap}¢ else both @{sim.limit_cents}¢" if cheap > 0
-                    else f"both @{sim.limit_cents}¢")
+            edge = max(0, 100 - 2 * sim.limit_cents)
+            path = (f"lift ≤{cheap}¢ / other to +{edge}¢ lock else both @{sim.limit_cents}¢"
+                    if cheap > 0 else f"both @{sim.limit_cents}¢")
             prev = (f"skip prev ≥{sim.max_prev_move_pct:.2f}%"
                     if sim.max_prev_move_pct > 0 else "no prev filter")
             skip = f"{enter} · {quiet} · {path} · {prev}"
