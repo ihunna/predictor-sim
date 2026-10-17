@@ -367,7 +367,7 @@ class Dashboard:
                                   style="bold green" if prev_move > 0 else "bold red" if prev_move < 0 else "bold")
             parts.append(title_line)
 
-            if sim.strategy == "against":
+            if sim.strategy in ("against", "dual"):
                 parts.append(Text(""))
                 structure = (state.structure if state.structure else getattr(sim, "structure", None)) or "unknown"
                 struct_line = Text()
@@ -376,8 +376,9 @@ class Dashboard:
                     structure.upper() if structure != "unknown" else "unknown",
                     style=("bold green" if structure == "up" else "bold red" if structure == "down"
                            else "bold yellow" if structure == "mixed" else "bold dim"))
-                struct_line.append("   streak ", style="dim")
-                struct_line.append(state.streak_before or "unknown", style="bold")
+                if sim.strategy == "against":
+                    struct_line.append("   streak ", style="dim")
+                    struct_line.append(state.streak_before or "unknown", style="bold")
                 struct_line.append("   move ", style="dim")
                 if state.move_vs_avg is not None:
                     struct_line.append(f"{state.move_vs_avg:.2f}× avg", style="bold")
@@ -386,6 +387,12 @@ class Dashboard:
                 if state.rsi is not None:
                     struct_line.append("   RSI ", style="dim")
                     struct_line.append(f"{state.rsi:.0f}", style="bold")
+                elif getattr(sim, "rsi", None) is not None:
+                    struct_line.append("   RSI ", style="dim")
+                    struct_line.append(f"{sim.rsi:.0f}", style="bold")
+                else:
+                    struct_line.append("   RSI ", style="dim")
+                    struct_line.append("--", style="dim")
                 parts.append(struct_line)
 
             parts.append(Text(""))
@@ -571,12 +578,13 @@ class Dashboard:
                 skip += f" · now: {state.action}"
         elif sim.strategy == "dual":
             need = getattr(sim, "require_structure", "mixed") or "any"
-            struct = ""
-            if state is not None and getattr(state, "structure", None):
-                struct = f" · now:{state.structure}"
-            skip = f"both @{sim.limit_cents}¢ when structure={need}{struct}"
-            if state is not None and state.action:
-                skip += f" · {state.action}"
+            skip = f"both @{sim.limit_cents}¢ when structure={need}"
+            if state is not None:
+                st = state.structure or getattr(sim, "structure", None) or "—"
+                rsi = state.rsi if state.rsi is not None else getattr(sim, "rsi", None)
+                skip += f" · now {st}" + (f" RSI {rsi:.0f}" if rsi is not None else " RSI —")
+                if state.action:
+                    skip += f" · {state.action}"
         elif sim.strategy == "scalp":
             tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
             stop = (f"stop ≤{sim.stop_cents}¢×{sim.stop_confirm_seconds}s"

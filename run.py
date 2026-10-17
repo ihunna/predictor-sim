@@ -119,6 +119,9 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     if sim.strategy in ("regime", "fav", "against", "combo"):
         decide_regime(ui, sim, state, prev_move)
         return
+    if sim.strategy == "dual":
+        decide_dual(ui, sim, state, prev_move)
+        return
     reason = sim.prev_move_skip_reason(prev_move)
     sim.resolve_decision(state, reason)
     message = None
@@ -134,6 +137,28 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
         start, end = sim.watch_seconds()
         message = (f"👀 Last window moved {prev_move:+.3f}%: watching {format_time(start)}-{format_time(end)} in "
                    f"for a side to reach {sim.leader_at_cents}¢, then buying it at its ask (≤{sim.leader_max_cents}¢).")
+    ui.prev_move_known(state, prev_move, message)
+
+
+def decide_dual(ui, sim, state, prev_move):
+    """Refresh structure/RSI (same fields as against), then place both limits only when mixed."""
+    avg, vs_avg, rsi, structure = sim.refresh_structure(state.window_start, prev_move_pct=prev_move)
+    state.avg_move_pct, state.move_vs_avg, state.rsi, state.structure = avg, vs_avg, rsi, structure or ""
+    reason = sim.prev_move_skip_reason(prev_move)
+    need = (getattr(sim, "require_structure", "") or "").strip().lower()
+    if not reason and need and (structure or "").lower() != need:
+        reason = f"structure_{structure or 'unknown'}_need_{need}"
+    sim.resolve_decision(state, reason)
+    struct = structure or "unknown"
+    streak = f"structure {struct}"
+    if rsi is not None:
+        streak += f", RSI {rsi:.0f}"
+    if vs_avg is not None:
+        streak += f", move {vs_avg:.2f}× avg"
+    if reason:
+        message = f"⏸️ Skipping dual ({reason}; {streak}): logging this window without trading."
+    else:
+        message = (f"🎯 Dual window ({streak}): placing both {sim.limit_cents}¢ ×{sim.contracts} limits.")
     ui.prev_move_known(state, prev_move, message)
 
 
