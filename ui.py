@@ -569,6 +569,19 @@ class Dashboard:
                     f"{sim.dual_lookback}, else skip")
             if state is not None and state.action:
                 skip += f" · now: {state.action}"
+        elif sim.strategy == "dual":
+            enter = (f"from {sim.enter_after_seconds}s in"
+                     if getattr(sim, "enter_after_seconds", 0) > 0 else "from start")
+            quiet = (f"|Δ|<{sim.quiet_max_pct:.3f}%"
+                     if getattr(sim, "quiet_max_pct", 0) > 0 else "no quiet gate")
+            cheap = getattr(sim, "cheap_cents", 0)
+            path = (f"lift ≤{cheap}¢ else both @{sim.limit_cents}¢" if cheap > 0
+                    else f"both @{sim.limit_cents}¢")
+            prev = (f"skip prev ≥{sim.max_prev_move_pct:.2f}%"
+                    if sim.max_prev_move_pct > 0 else "no prev filter")
+            skip = f"{enter} · {quiet} · {path} · {prev}"
+            if state is not None and state.action:
+                skip += f" · now: {state.action}"
         else:
             skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
         prices = "at ask" if sim.strategy == "leader" else f"{sim.limit_cents}¢"
