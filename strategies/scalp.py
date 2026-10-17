@@ -1,12 +1,8 @@
-"""Cheap-side bounce scalper: buy a dumped ask, take profit on a bounce, time-exit if not.
+"""Cheap-side hold scalper: buy a dumped ask and hold to settlement.
 
-Best levels from the logs: enter ~20¢, take-profit ~30¢, flatten by ~30s left.
-Miss/stop is intentionally **wide** and **confirmed** so 1–2¢ wicks do not stop you out:
-
-* primary exit = take-profit bid
-* secondary = sell at bid when ``exit_left_seconds`` remain (time stop, not a tight tick stop)
-* optional hard stop only if bid stays ≤ ``stop_cents`` for ``stop_confirm_seconds``
-  (default stop ≈ half entry — disaster floor, not a small-pullback stop)
+Merged updown/trade logs: WR on the cheap side beats the ask → edge is in holding.
+Defaults from that data (entry ≤20¢, no early exit). Optional TP / time-exit / confirmed
+stop remain available via flags but are off by default — early exits cut EV vs hold.
 
 Bid is inferred as ``1 − other_ask`` (same convention as against take-profit).
 """
@@ -16,27 +12,31 @@ from sim import BaseSim, Order
 
 
 class ScalpSim(BaseSim):
-    """Single-side bounce: entry ask → TP bid / time exit / confirmed wide stop."""
+    """Single-side: buy ask≤entry, hold to settle (optional TP / time / confirmed stop)."""
 
     strategy = "scalp"
     start_mode = "against"
 
-    def __init__(self, *args, entry_cents=20, target_cents=30, exit_left_seconds=30,
-                 stop_cents=None, stop_confirm_seconds=5, **kwargs):
-        # Scalp does not use dual cancel/hedge defaults the same way; turn cancel off unless set.
+    def __init__(self, *args, entry_cents=20, target_cents=0, exit_left_seconds=0,
+                 stop_cents=0, stop_confirm_seconds=5, **kwargs):
         kwargs.setdefault("cancel_left_pct", 0.0)
         kwargs.setdefault("stop_loss_seconds", 0)
         super().__init__(*args, **kwargs)
         self.entry_cents = max(1, int(entry_cents))
-        self.target_cents = max(self.entry_cents + 1, int(target_cents))
+        # 0 = hold to settle (no take-profit)
+        self.target_cents = max(0, int(target_cents))
+        if self.target_cents > 0 and self.target_cents <= self.entry_cents:
+            self.target_cents = self.entry_cents + 1
         self.exit_left_seconds = max(0, int(exit_left_seconds))
-        # Wide hard stop: default half of entry (floored at 2¢)
-        if stop_cents is None:
-            stop_cents = max(2, self.entry_cents // 2)
-        self.stop_cents = max(0, int(stop_cents))  # 0 = no hard stop
+        # 0 = no hard stop (default — data: stops cut winners before maturity)
+        self.stop_cents = max(0, int(stop_cents if stop_cents is not None else 0))
         self.stop_confirm_seconds = max(0, int(stop_confirm_seconds))
 
     def summarize(self):
+        if self.target_cents > 0:
+            tp = f"TP bid≥{self.target_cents}¢"
+        else:
+            tp = "hold to settle"
         stop = (
             f"hard stop ≤{self.stop_cents}¢ for {self.stop_confirm_seconds}s"
             if self.stop_cents > 0 else "no hard stop"
@@ -47,8 +47,7 @@ class ScalpSim(BaseSim):
         )
         return (
             f"🎯 Scalp: buy ask≤{self.entry_cents}¢ ×{self.contracts}, "
-            f"TP bid≥{self.target_cents}¢, {time_x}, {stop} "
-            f"(small dips ignored until confirmed wide stop) "
+            f"{tp}, {time_x}, {stop} "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
 
@@ -74,13 +73,15 @@ class ScalpSim(BaseSim):
         if not candidates:
             return []
 
-        # Prefer the cheaper printed ask
         side, ask = min(candidates, key=lambda x: x[1])
         state.mode = "against"
         state.bet_side = side
-        state.take_profit = self.target_cents / 100.0
+        state.take_profit = self.target_cents / 100.0 if self.target_cents > 0 else 0.0
         state.action = "scalp"
-        state.action_reason = f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_{self.target_cents}c"
+        if self.target_cents > 0:
+            state.action_reason = f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_{self.target_cents}c"
+        else:
+            state.action_reason = f"buy_{side.lower()}_{int(round(ask * 100))}c_hold"
         state.notes.append(state.action_reason)
         state.scalp_stop_since = None
         return [Order(side, "main", ask, self.contracts, remaining)]
@@ -111,7 +112,6 @@ class ScalpSim(BaseSim):
         bid = self._bid(side, up_ask, down_ask)
         if held <= 0 or bid <= 0:
             return
-        # Time flatten uses the live bid (not a tight stop)
         state.stop_side, state.stop_contracts, state.stop_price = side, held, bid
         state.stop_time_left = remaining
         state.notes.append(
@@ -119,7 +119,7 @@ class ScalpSim(BaseSim):
         )
 
     def _maybe_hard_stop(self, state, now, remaining, up_ask, down_ask):
-        """Wide stop only after the bid stays ≤ stop for stop_confirm_seconds (filters wicks)."""
+        """Optional wide stop only after bid stays ≤ stop for stop_confirm_seconds."""
         if self.stop_cents <= 0 or not state.bet_side:
             return
         if state.tp_side or state.stop_time_left is not None:
@@ -169,4 +169,6 @@ class ScalpSim(BaseSim):
             text += f" · TP {state.tp_contracts} @ {round(state.take_profit * 100)}¢"
         elif state.take_profit:
             text += f" · TP {round(state.take_profit * 100)}¢"
+        elif state.bet_side and state.held(state.bet_side) > 0:
+            text += " · hold"
         return text

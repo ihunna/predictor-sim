@@ -371,11 +371,9 @@ def parse_args():
                         choices=("leader", "regime", "fav", "against", "combo", "dual", "scalp"), default=None,
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: when |Δ|≤--quiet-max-pct and an ask ≤--cheap-ask, lift that side and rest the "
-                             "other at --pair-cents−ask (equal size); else optionally both @--limit; flatten "
-                             "stranded cheap by --strand-exit. "
-                             "scalp: buy ask≤--scalp-entry, TP bid≥--scalp-target, time-exit at --scalp-exit-left, "
-                             "wide confirmed stop at --scalp-stop (small pullbacks ignored). "
-                             "(default: regime for 5m, dual otherwise)")
+                             "other at --pair-cents−ask (equal size); hold stranded cheap by default. "
+                             "scalp: buy ask≤--scalp-entry and hold to settle (optional TP/time/stop flags). "
+                             "(default: regime for 5m, dual otherwise)"))
 
     parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
                         help="Against only. struct_rsi (default): against clear structure + RSI agree with structure. "
@@ -432,26 +430,27 @@ def parse_args():
                         help="Dual: max |BTC Δ from PTB| for the cheap+high signal "
                              "(default: 0.01%% on 5m, scaled by duration; 0 = off).")
 
-    parser.add_argument("--cheap-ask", type=int, default=30, metavar="CENTS",
+    parser.add_argument("--cheap-ask", type=int, default=20, metavar="CENTS",
                         help="Dual: trigger when one ask is at or below this — lift it and rest the other at "
-                             "--pair-cents−ask (default 30; 0 = balanced both@limit only).")
-    parser.add_argument("--pair-cents", type=int, default=80, metavar="CENTS",
-                        help="Dual: target pair sum for cheap+other limits (default 80 → ~20¢ lock).")
-    parser.add_argument("--strand-exit", type=int, default=60, metavar="SECONDS_LEFT",
+                             "--pair-cents−ask (default 20 from merged logs; 0 = balanced both@limit only).")
+    parser.add_argument("--pair-cents", type=int, default=70, metavar="CENTS",
+                        help="Dual: target pair sum for cheap+other limits (default 70 → +30¢ lock if both fill).")
+    parser.add_argument("--strand-exit", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Dual: if only one side filled, sell it at bid with this many seconds left "
-                             "(default 60; 0 = hold).")
+                             "(default 0 = hold stranded — logs: early flatten wiped EV).")
     parser.add_argument("--balanced-dual", action="store_true",
                         help="Dual: if no cheap ask prints, also rest both @--limit (off by default — skew only).")
 
     parser.add_argument("--scalp-entry", type=int, default=20, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 20).")
-    parser.add_argument("--scalp-target", type=int, default=30, metavar="CENTS",
-                        help="Scalp: take-profit when that side's bid reaches this (default 30).")
-    parser.add_argument("--scalp-exit-left", type=int, default=30, metavar="SECONDS_LEFT",
-                        help="Scalp: flatten at bid with this many seconds left if no TP (default 30; 0 = off).")
-    parser.add_argument("--scalp-stop", type=int, default=None, metavar="CENTS",
+    parser.add_argument("--scalp-target", type=int, default=0, metavar="CENTS",
+                        help="Scalp: take-profit when bid reaches this (default 0 = hold to settle; "
+                             "data: early TP cuts EV).")
+    parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
+                        help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
+    parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",
                         help="Scalp: hard stop only if bid stays ≤ this for --scalp-stop-confirm seconds "
-                             "(default: half of --scalp-entry; 0 = no hard stop).")
+                             "(default 0 = off).")
     parser.add_argument("--scalp-stop-confirm", type=int, default=5, metavar="SECONDS",
                         help="Scalp: bid must stay ≤ stop this long before stopping (default 5; filters wicks).")
 
@@ -535,12 +534,12 @@ def main():
         raise SystemExit("--pair-cents must be between 2 and 198")
     if args.strand_exit < 0 or args.strand_exit >= duration * 60:
         raise SystemExit(f"--strand-exit must be between 0 and {duration * 60 - 1}")
-    if not 1 <= args.scalp_entry < args.scalp_target <= 99:
-        raise SystemExit("--scalp-entry must be < --scalp-target, both 1-99")
+    if not 1 <= args.scalp_entry <= 99:
+        raise SystemExit("--scalp-entry must be between 1 and 99")
+    if args.scalp_target != 0 and not args.scalp_entry < args.scalp_target <= 99:
+        raise SystemExit("--scalp-target must be 0 (hold) or > --scalp-entry and ≤99")
     if args.scalp_exit_left < 0 or args.scalp_exit_left >= duration * 60:
         raise SystemExit(f"--scalp-exit-left must be between 0 and {duration * 60 - 1}")
-    if args.scalp_stop is None:
-        args.scalp_stop = max(2, args.scalp_entry // 2)
     if not 0 <= args.scalp_stop < args.scalp_entry:
         raise SystemExit("--scalp-stop must be 0 (off) or below --scalp-entry")
     if args.scalp_stop_confirm < 0:

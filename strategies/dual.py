@@ -1,16 +1,16 @@
-"""Dual: min-move / max-action → buy cheap + rest the other at a matching lock price.
+"""Dual skew: quiet book + cheap ask → lift cheap + rest the other at a lock price.
 
-Watches from ``enter_after_seconds`` (0 = from open) until late in the window.
+Merged logs (5m/15m updown + deduped trade windows): best lock setups cluster around
+lift ≤15–20¢ with pair ≈70¢; stranded cheap should be **held** (flatten-to-zero wiped EV).
+
 When |BTC Δ from PTB| ≤ ``quiet_max_pct`` and one ask is ≤ ``cheap_cents``:
 
 * lift ``contracts`` on the cheap side at its ask
-* rest the same size on the other side at ``pair_cents − cheap_ask`` (locked edge if both fill)
+* rest the same size on the other side at ``pair_cents − cheap_ask``
 
-Equal contracts, unequal prices. If only the cheap side fills, flatten it by
-``strand_exit_seconds`` left (sell at bid) so unfinished cheap legs do not sit to resolution.
-
-If the book never triggers that signal, optionally rests both @ ``limit_cents`` when still quiet
-and both asks are above ``cheap_cents`` (balanced path). ``run.py`` scales quiet % by duration.
+Equal contracts, unequal prices. Default: hold if only the cheap leg fills.
+Optional ``strand_exit_seconds`` flattens early (off by default). Optional balanced
+both@limit via ``allow_balanced`` (off by default). ``run.py`` scales quiet % by duration.
 """
 
 from logs import format_time
@@ -18,13 +18,13 @@ from sim import BaseSim, Order
 
 
 class DualSim(BaseSim):
-    """Event dual: cheap lift + equal-size complement, or balanced both @ limit."""
+    """Event dual: cheap lift + equal-size complement (skew); optional balanced fallback."""
 
     strategy = "dual"
     start_mode = "dual"
 
-    def __init__(self, *args, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=30,
-                 pair_cents=80, strand_exit_seconds=0, allow_balanced=False, **kwargs):
+    def __init__(self, *args, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=20,
+                 pair_cents=70, strand_exit_seconds=0, allow_balanced=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.enter_after_seconds = max(0, int(enter_after_seconds))
         self.quiet_max_pct = float(quiet_max_pct)

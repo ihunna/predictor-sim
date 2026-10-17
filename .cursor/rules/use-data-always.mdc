@@ -1,0 +1,17 @@
+---
+description: Strategy params and claims must come from log/replay data, never guesses
+alwaysApply: true
+---
+
+# Use data always
+
+When choosing or defending entry, exit, stop, limits, pair sums, quiet gates, or any strategy default:
+
+1. **Measure first** on the relevant CSVs / replays (e.g. `btc-*-predict-*-trades.csv`, `*-updown.csv`) before proposing numbers.
+2. **Show the table** (n, WR, EV, fill rates) that justifies the pick — do not ship “round” levels from intuition.
+3. **Prefer hold-to-settle EV** over tidy TP/time-exit stories unless the data shows early exit wins.
+4. **State caveats** (selection bias, `lowest_*` vs live fills, sample size) next to the numbers.
+5. If data is missing or too thin, say so and **do not invent defaults** — ask or pull more history.
+
+Wrong: “best levels look like 20→30 with a wide stop.”
+Right: run the grid, paste EV by setup, then set defaults to the winner.

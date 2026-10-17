@@ -32,8 +32,8 @@ def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=
                    quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents)
 
 
-def quiet_sim(tmp, limit=40, place_at=None, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=30,
-              pair_cents=80, strand_exit_seconds=60, hedge_cents=0, allow_balanced=False):
+def quiet_sim(tmp, limit=40, place_at=None, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=20,
+              pair_cents=70, strand_exit_seconds=0, hedge_cents=0, allow_balanced=False):
     """Live dual: |Δ|≤quiet + ask≤cheap → lift cheap + other @ pair−ask; else both @ limit."""
     return DualSim("btc", 5, limit, 8, place_at, os.path.join(tmp, "trades.csv"), 100.0, "default",
                    hedge_cents=hedge_cents, enter_after_seconds=enter_after_seconds,
@@ -63,30 +63,29 @@ def test_quiet_dual_rest_both(tmp):
 
 
 def test_dual_skew_lift_and_other(tmp):
-    """Quiet + ask≤30¢ → lift cheap at ask and rest other at pair−ask (equal size)."""
-    # allow_balanced=False so the pre-skew book does not rest both @ limit first
-    sim = quiet_sim(tmp, limit=40, pair_cents=80, allow_balanced=False)
+    """Quiet + ask≤20¢ → lift cheap at ask and rest other at pair−ask (equal size)."""
+    sim = quiet_sim(tmp, limit=40, cheap_cents=20, pair_cents=70, allow_balanced=False)
     state = run_window(sim, [
         (0, 0.50, 0.51),
-        (10, 0.28, 0.73),   # Up cheap → lift Up @28, rest Down @52
+        (10, 0.18, 0.83),   # Up cheap → lift Up @18, rest Down @52
         (80, 0.80, 0.50),   # Down ask ≤52 → maker fill @52
         (100, 0.80, 0.51),
     ], btc=PTB, ptb=PTB)
     assert state.action == "dual_skew"
-    assert "lift_up_28c_other_52c" in state.action_reason
-    assert state.up_fill_price == 0.28 and state.up_taker
+    assert "lift_up_18c_other_52c" in state.action_reason
+    assert state.up_fill_price == 0.18 and state.up_taker
     assert state.down_fill_price == 0.52
     assert state.fill_type == "both"
     row = sim.settle(state, "Down", PTB, PTB, 0.0)
-    # cost 0.28*8 + 0.52*8 = 6.40; payout 8 → +1.60
-    assert row["pnl"] == "1.6000", row["pnl"]
+    # cost 0.18*8 + 0.52*8 = 5.60; payout 8 → +2.40
+    assert row["pnl"] == "2.4000", row["pnl"]
 
 
 def test_dual_skew_strand_exit(tmp):
-    """Cheap fills, other never does → flatten cheap at strand_exit."""
-    sim = quiet_sim(tmp, limit=40, pair_cents=80, strand_exit_seconds=60)
+    """Optional strand_exit: cheap fills, other never does → flatten at strand_exit."""
+    sim = quiet_sim(tmp, limit=40, cheap_cents=20, pair_cents=70, strand_exit_seconds=60)
     state = run_window(sim, [
-        (0, 0.28, 0.73),    # lift Up @28, rest Down @52
+        (0, 0.18, 0.83),    # lift Up @18, rest Down @52
         (100, 0.90, 0.80),  # Down never ≤52
         (250, 0.95, 0.90),  # at 50s left (<60) strand sell Up at bid 1-0.90=0.10
     ], btc=PTB, ptb=PTB)
@@ -96,13 +95,28 @@ def test_dual_skew_strand_exit(tmp):
     assert any("strand_sold_up" in n for n in state.notes)
 
 
+def test_dual_skew_holds_stranded_by_default(tmp):
+    """Default strand_exit=0 → keep cheap leg to settlement."""
+    sim = quiet_sim(tmp, limit=40, cheap_cents=20, pair_cents=70, strand_exit_seconds=0)
+    state = run_window(sim, [
+        (0, 0.18, 0.83),
+        (100, 0.90, 0.80),
+        (250, 0.95, 0.90),
+    ], btc=PTB, ptb=PTB)
+    assert state.fill_type == "only_up"
+    assert state.stop_time_left is None
+    row = sim.settle(state, "Up", PTB, PTB, 0.0)
+    # 8 @ 18¢ → payout 8 − 1.44 = +6.56
+    assert row["pnl"] == "6.5600", row["pnl"]
+
+
 def test_dual_waits_when_delta_loud(tmp):
     """|Δ| above quiet max → no place even if ask is cheap."""
     sim = quiet_sim(tmp, quiet_max_pct=0.01)
     state = run_window(sim, [
-        (0, 0.28, 0.73),
-        (60, 0.28, 0.73),
-        (120, 0.25, 0.76),
+        (0, 0.18, 0.83),
+        (60, 0.18, 0.83),
+        (120, 0.15, 0.86),
     ], btc=PTB * 1.0005, ptb=PTB)
     assert state.placed_time_left is None
     assert "never_placed" in sim.settle(state, "Up", PTB, PTB * 1.0005, 0.05)["notes"]
@@ -112,24 +126,38 @@ def test_quiet_dual_waits_for_enter_after(tmp):
     """Does not place before enter_after even if quiet and book is fine."""
     sim = quiet_sim(tmp, enter_after_seconds=60)
     state = run_window(sim, [
-        (0, 0.28, 0.73),
-        (30, 0.28, 0.73),
-        (59, 0.28, 0.73),
+        (0, 0.18, 0.83),
+        (30, 0.18, 0.83),
+        (59, 0.18, 0.83),
     ], btc=PTB, ptb=PTB)
     assert state.placed_time_left is None
     assert "never_placed" in sim.settle(state, "Up", PTB, PTB, 0.0)["notes"]
 
 
-def scalp_sim(tmp, entry=20, target=30, exit_left=30, stop=10, confirm=5):
+def scalp_sim(tmp, entry=20, target=0, exit_left=0, stop=0, confirm=5):
     return ScalpSim("btc", 5, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm)
 
 
-def test_scalp_tp(tmp):
-    """Buy ≤20¢ → sell when bid ≥30¢."""
+def test_scalp_hold_to_settle(tmp):
+    """Default: buy ≤20¢ and hold — no TP / time / stop."""
     sim = scalp_sim(tmp)
-    # Up ask 18 → buy; then Down ask 68 → Up bid = 32 ≥ 30 → TP
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.18, 0.83),
+        (100, 0.40, 0.80),
+        (280, 0.50, 0.75),
+    ])
+    assert state.action == "scalp" and "hold" in state.action_reason
+    assert state.up_fill_price == 0.18 and state.tp_side is None and state.stop_time_left is None
+    row = sim.settle(state, "Up", 1, 2, None)
+    assert float(row["pnl"]) == 6.56  # 8 − 1.44
+
+
+def test_scalp_tp(tmp):
+    """Optional TP: buy ≤20¢ → sell when bid ≥30¢."""
+    sim = scalp_sim(tmp, target=30)
     state = run_window(sim, [
         (0, 0.50, 0.51),
         (20, 0.18, 0.83),
@@ -138,42 +166,41 @@ def test_scalp_tp(tmp):
     assert state.action == "scalp" and state.up_fill_price == 0.18 and state.up_taker
     assert state.tp_side == "Up" and state.tp_contracts == 8
     row = sim.settle(state, "Down", 1, 2, None)
-    # cost 1.44, TP sale 0.30*8=2.40 → +0.96
     assert float(row["pnl"]) == 0.96
 
 
 def test_scalp_ignores_brief_wick(tmp):
-    """Bid dips under stop for < confirm seconds → stay in; later TP."""
-    sim = scalp_sim(tmp, stop=10, confirm=5)
+    """Optional stop: brief wick under stop → stay; later TP."""
+    sim = scalp_sim(tmp, target=30, stop=10, confirm=5)
     state = run_window(sim, [
-        (0, 0.18, 0.83),          # buy Up @18
-        (10, 0.50, 0.95),         # bid=5 ≤10 — start confirm clock
-        (12, 0.50, 0.95),         # still ≤10 but only 2s — do not stop
-        (14, 0.45, 0.70),         # bid=30 — recover; TP
+        (0, 0.18, 0.83),
+        (10, 0.50, 0.95),
+        (12, 0.50, 0.95),
+        (14, 0.45, 0.70),
     ])
     assert state.stop_time_left is None
     assert state.tp_side == "Up"
 
 
 def test_scalp_confirmed_stop(tmp):
-    """Bid ≤ stop for ≥ confirm seconds → flatten at live bid."""
+    """Optional stop: bid ≤ stop for ≥ confirm seconds → flatten."""
     sim = scalp_sim(tmp, stop=10, confirm=5)
     state = run_window(sim, [
         (0, 0.18, 0.83),
-        (10, 0.50, 0.95),   # bid=5
-        (16, 0.50, 0.95),   # 6s later still ≤10 → stop
+        (10, 0.50, 0.95),
+        (16, 0.50, 0.95),
     ])
     assert state.stop_side == "Up" and state.stop_price == 0.05
     assert any("stop_sold_up" in n for n in state.notes)
 
 
 def test_scalp_time_exit(tmp):
-    """No TP → flatten at exit_left on live bid."""
+    """Optional time exit: flatten at exit_left on live bid."""
     sim = scalp_sim(tmp, exit_left=30, stop=0)
     state = run_window(sim, [
         (0, 0.18, 0.83),
-        (100, 0.40, 0.80),   # bid=20, no TP
-        (280, 0.50, 0.75),   # 20s left < 30 → time exit bid=25
+        (100, 0.40, 0.80),
+        (280, 0.50, 0.75),
     ])
     assert state.stop_side == "Up" and abs(state.stop_price - 0.25) < 1e-9
     assert any("time_sold_up" in n for n in state.notes)
@@ -1086,8 +1113,10 @@ def main():
             test_quiet_dual_rest_both,
             test_dual_skew_lift_and_other,
             test_dual_skew_strand_exit,
+            test_dual_skew_holds_stranded_by_default,
             test_dual_waits_when_delta_loud,
             test_quiet_dual_waits_for_enter_after,
+            test_scalp_hold_to_settle,
             test_scalp_tp,
             test_scalp_ignores_brief_wick,
             test_scalp_confirmed_stop,
