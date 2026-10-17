@@ -1,17 +1,17 @@
 ---
-description: Strategy params and claims must come from log/replay data, never guesses
+description: Strategy params from live-matched log replay — never guesses or unfiltered all-windows EV
 alwaysApply: true
 ---
 
-# Use data always
+# Use data always (live-matched)
 
 When choosing or defending entry, exit, stop, limits, pair sums, quiet gates, or any strategy default:
 
-1. **Measure first** on the relevant CSVs / replays (e.g. `btc-*-predict-*-trades.csv`, `*-updown.csv`) before proposing numbers.
-2. **Show the table** (n, WR, EV, fill rates) that justifies the pick — do not ship “round” levels from intuition.
-3. **Prefer hold-to-settle EV** over tidy TP/time-exit stories unless the data shows early exit wins.
-4. **State caveats** (selection bias, `lowest_*` vs live fills, sample size) next to the numbers.
-5. If data is missing or too thin, say so and **do not invent defaults** — ask or pull more history.
+1. **Replay as live** — same gates and fill rules as the strategy defaults (quiet `|Δ|`, enter-after, no balanced fallback, hold stranded, scalp hold, etc.). Do not quote “all windows that printed cheap” as if it were the bot.
+2. **Fills** — lift at the ask when the signal fires; the other leg fills only if a **later** ask reaches the rest price. Do not treat `lowest_*` alone as a both-fill.
+3. **Show the table** (n, wins, losses, both-fills, EV, $) from that live-matched replay.
+4. **Prefer hold-to-settle** unless the same live replay shows early exit wins.
+5. If tick/snapshot data is too thin, say so — **do not invent defaults**.
 
-Wrong: “best levels look like 20→30 with a wide stop.”
-Right: run the grid, paste EV by setup, then set defaults to the winner.
+Wrong: EV on every window with `lowest ≤ 20¢`, no quiet gate.
+Right: walk ask + Δ snapshots; enter only when live gates pass; settle like the bot.

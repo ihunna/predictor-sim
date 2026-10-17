@@ -134,15 +134,15 @@ def test_quiet_dual_waits_for_enter_after(tmp):
     assert "never_placed" in sim.settle(state, "Up", PTB, PTB, 0.0)["notes"]
 
 
-def scalp_sim(tmp, entry=20, target=0, exit_left=0, stop=0, confirm=5):
+def scalp_sim(tmp, entry=30, target=60, exit_left=0, stop=0, confirm=5):
     return ScalpSim("btc", 5, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm)
 
 
 def test_scalp_hold_to_settle(tmp):
-    """Default: buy ≤20¢ and hold — no TP / time / stop."""
-    sim = scalp_sim(tmp)
+    """Opt-out: target=0 → buy ≤30¢ and hold (no TP)."""
+    sim = scalp_sim(tmp, target=0)
     state = run_window(sim, [
         (0, 0.50, 0.51),
         (20, 0.18, 0.83),
@@ -156,22 +156,36 @@ def test_scalp_hold_to_settle(tmp):
 
 
 def test_scalp_tp(tmp):
-    """Optional TP: buy ≤20¢ → sell when bid ≥30¢."""
-    sim = scalp_sim(tmp, target=30)
+    """Default path: buy ≤30¢ → sell when bid ≥60¢."""
+    sim = scalp_sim(tmp)
     state = run_window(sim, [
         (0, 0.50, 0.51),
-        (20, 0.18, 0.83),
-        (60, 0.40, 0.68),
+        (20, 0.25, 0.76),
+        (60, 0.40, 0.38),  # up bid = 1−0.38 = 0.62 ≥ 0.60
     ])
-    assert state.action == "scalp" and state.up_fill_price == 0.18 and state.up_taker
+    assert state.action == "scalp" and state.up_fill_price == 0.25 and state.up_taker
     assert state.tp_side == "Up" and state.tp_contracts == 8
     row = sim.settle(state, "Down", 1, 2, None)
-    assert float(row["pnl"]) == 0.96
+    assert float(row["pnl"]) == 2.80  # (0.60 − 0.25) × 8
+
+
+def test_scalp_miss_is_loss(tmp):
+    """No TP → hold to settle on cheap side loses when that side loses."""
+    sim = scalp_sim(tmp)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+        (100, 0.40, 0.70),  # up bid = 0.30 — never reaches 60¢
+        (280, 0.20, 0.85),
+    ])
+    assert state.tp_side is None and state.up_fill_price == 0.25
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert float(row["pnl"]) == -2.0  # −0.25 × 8
 
 
 def test_scalp_ignores_brief_wick(tmp):
     """Optional stop: brief wick under stop → stay; later TP."""
-    sim = scalp_sim(tmp, target=30, stop=10, confirm=5)
+    sim = scalp_sim(tmp, entry=20, target=30, stop=10, confirm=5)
     state = run_window(sim, [
         (0, 0.18, 0.83),
         (10, 0.50, 0.95),
@@ -184,7 +198,7 @@ def test_scalp_ignores_brief_wick(tmp):
 
 def test_scalp_confirmed_stop(tmp):
     """Optional stop: bid ≤ stop for ≥ confirm seconds → flatten."""
-    sim = scalp_sim(tmp, stop=10, confirm=5)
+    sim = scalp_sim(tmp, entry=20, target=0, stop=10, confirm=5)
     state = run_window(sim, [
         (0, 0.18, 0.83),
         (10, 0.50, 0.95),
@@ -196,7 +210,7 @@ def test_scalp_confirmed_stop(tmp):
 
 def test_scalp_time_exit(tmp):
     """Optional time exit: flatten at exit_left on live bid."""
-    sim = scalp_sim(tmp, exit_left=30, stop=0)
+    sim = scalp_sim(tmp, entry=20, target=0, exit_left=30, stop=0)
     state = run_window(sim, [
         (0, 0.18, 0.83),
         (100, 0.40, 0.80),
@@ -1118,6 +1132,7 @@ def main():
             test_quiet_dual_waits_for_enter_after,
             test_scalp_hold_to_settle,
             test_scalp_tp,
+            test_scalp_miss_is_loss,
             test_scalp_ignores_brief_wick,
             test_scalp_confirmed_stop,
             test_scalp_time_exit,

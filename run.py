@@ -372,7 +372,7 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: when |Δ|≤--quiet-max-pct and an ask ≤--cheap-ask, lift that side and rest the "
                              "other at --pair-cents−ask (equal size); hold stranded cheap by default. "
-                             "scalp: buy ask≤--scalp-entry and hold to settle (optional TP/time/stop flags). "
+                             "scalp: buy ask≤--scalp-entry, TP bid≥--scalp-target (default 30→60; miss=−entry). "
                              "(default: regime for 5m, dual otherwise)")
 
     parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
@@ -441,11 +441,11 @@ def parse_args():
     parser.add_argument("--balanced-dual", action="store_true",
                         help="Dual: if no cheap ask prints, also rest both @--limit (off by default — skew only).")
 
-    parser.add_argument("--scalp-entry", type=int, default=20, metavar="CENTS",
-                        help="Scalp: buy when a side's ask is at or below this (default 20).")
-    parser.add_argument("--scalp-target", type=int, default=0, metavar="CENTS",
-                        help="Scalp: take-profit when bid reaches this (default 0 = hold to settle; "
-                             "data: early TP cuts EV).")
+    parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
+                        help="Scalp: buy when a side's ask is at or below this (default 30; 5m replay).")
+    parser.add_argument("--scalp-target", type=int, default=60, metavar="CENTS",
+                        help="Scalp: take-profit when bid reaches this (default 60; 0 = hold to settle; "
+                             "miss without TP = −entry at settle).")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",

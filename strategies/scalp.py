@@ -1,8 +1,8 @@
-"""Cheap-side hold scalper: buy a dumped ask and hold to settlement.
+"""Cheap-side scalper: buy a dumped ask, take profit on bid, else full loss at settle.
 
-Merged updown/trade logs: WR on the cheap side beats the ask → edge is in holding.
-Defaults from that data (entry ≤20¢, no early exit). Optional TP / time-exit / confirmed
-stop remain available via flags but are off by default — early exits cut EV vs hold.
+5m BTC ask-walk replay (miss = −entry): buy ≤30¢, TP bid ≥60¢ — both halves green.
+Hold-to-settle on the cheap side is a loss in that sample (0 settle wins after missed TP);
+optional ``target_cents=0`` / time-exit / confirmed stop remain available via flags.
 
 Bid is inferred as ``1 − other_ask`` (same convention as against take-profit).
 """
@@ -12,29 +12,29 @@ from sim import BaseSim, Order
 
 
 class ScalpSim(BaseSim):
-    """Single-side: buy ask≤entry, hold to settle (optional TP / time / confirmed stop)."""
+    """Single-side: buy ask≤entry, sell bid≥TP (default 30→60); miss holds and loses."""
 
     strategy = "scalp"
     start_mode = "against"
 
-    def __init__(self, *args, entry_cents=20, target_cents=0, exit_left_seconds=0,
+    def __init__(self, *args, entry_cents=30, target_cents=60, exit_left_seconds=0,
                  stop_cents=0, stop_confirm_seconds=5, **kwargs):
         kwargs.setdefault("cancel_left_pct", 0.0)
         kwargs.setdefault("stop_loss_seconds", 0)
         super().__init__(*args, **kwargs)
         self.entry_cents = max(1, int(entry_cents))
-        # 0 = hold to settle (no take-profit)
+        # 0 = hold to settle (no take-profit); default 60 from 5m replay
         self.target_cents = max(0, int(target_cents))
         if self.target_cents > 0 and self.target_cents <= self.entry_cents:
             self.target_cents = self.entry_cents + 1
         self.exit_left_seconds = max(0, int(exit_left_seconds))
-        # 0 = no hard stop (default — data: stops cut winners before maturity)
+        # 0 = no hard stop
         self.stop_cents = max(0, int(stop_cents if stop_cents is not None else 0))
         self.stop_confirm_seconds = max(0, int(stop_confirm_seconds))
 
     def summarize(self):
         if self.target_cents > 0:
-            tp = f"TP bid≥{self.target_cents}¢"
+            tp = f"TP bid≥{self.target_cents}¢ (miss=−entry)"
         else:
             tp = "hold to settle"
         stop = (
