@@ -373,7 +373,7 @@ def parse_args():
                              "dual: when |Δ|≤--quiet-max-pct and an ask ≤--cheap-ask, lift that side and rest the "
                              "other at --pair-cents−ask (equal size); hold stranded cheap by default. "
                              "scalp: buy ask≤--scalp-entry and hold to settle (optional TP/time/stop flags). "
-                             "(default: regime for 5m, dual otherwise)"))
+                             "(default: regime for 5m, dual otherwise)")
 
     parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
                         help="Against only. struct_rsi (default): against clear structure + RSI agree with structure. "
