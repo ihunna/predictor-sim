@@ -60,6 +60,8 @@ TRADES_HEADER = [
         for seconds in SNAPSHOT_SECONDS
         for name in (f"up_ask_{seconds}s_in", f"down_ask_{seconds}s_in", f"btc_move_pct_{seconds}s_in")
     ],
+    # signed BTC % from PTB + asks, only when rounded Δ changes: "12s:+0.0082@51/49;45s:-0.0031@48/53"
+    "btc_delta_changes",
     f"btc_up_{BTC_MOVE_LEVEL_PCT}pct_time_left",
     f"btc_down_{BTC_MOVE_LEVEL_PCT}pct_time_left",
     "placed_time_left",
@@ -291,6 +293,21 @@ def _snapshot_columns(snapshots):
     return columns
 
 
+def _delta_key(move):
+    """Round signed move the same way the log prints it, so tiny noise is not a 'change'."""
+    return f"{move:+.4f}"
+
+
+def _format_delta_changes(changes):
+    """Serialize (seconds_in, signed_move, up_ask, down_ask): ``12s:+0.0082@51/49;45s:-0.0031@48/53``."""
+    if not changes:
+        return ""
+    return ";".join(
+        f"{int(round(elapsed))}s:{_delta_key(move)}@{_cents(up_ask)}/{_cents(down_ask)}"
+        for elapsed, move, up_ask, down_ask in changes
+    )
+
+
 def _shares(depth, key):
     return f"{depth[key]:.2f}" if depth else ""
 
@@ -364,6 +381,11 @@ class WindowState:
     asks_end: tuple | None = None  # (up, down) at the first tick with END_SAMPLE_SECONDS or less left
     # seconds into the window -> (up ask, down ask, BTC's % move from the price to beat or None)
     snapshots: dict = field(default_factory=dict)
+    # latest BTC % move from the price to beat on this tick (None until both btc and ptb are known)
+    btc_move_pct: float | None = None
+    # (seconds_in, signed % move, up_ask, down_ask) when the rounded delta changes
+    btc_delta_changes: list = field(default_factory=list)
+    btc_delta_last_key: str | None = None
     # time left when BTC was first BTC_MOVE_LEVEL_PCT or more above / below the price to beat
     btc_up_level_time_left: float | None = None
     btc_down_level_time_left: float | None = None
@@ -643,6 +665,12 @@ class BaseSim:
         remaining = max(0.0, state.window_end - now)
         elapsed = now - state.window_start
         move = (btc - ptb) / ptb * 100 if btc > 0 and ptb > 0 else None
+        state.btc_move_pct = move
+        if move is not None:
+            key = _delta_key(move)
+            if key != state.btc_delta_last_key:
+                state.btc_delta_last_key = key
+                state.btc_delta_changes.append((elapsed, move, up_ask, down_ask))
         for seconds in SNAPSHOT_SECONDS:
             if seconds not in state.snapshots and seconds <= elapsed <= seconds + SNAPSHOT_LATE_SECONDS:
                 state.snapshots[seconds] = (up_ask, down_ask, move)
@@ -943,6 +971,7 @@ class BaseSim:
                 "up_ask_10s_left": _cents(state.asks_end[0]) if state.asks_end else "",
                 "down_ask_10s_left": _cents(state.asks_end[1]) if state.asks_end else "",
                 **_snapshot_columns(state.snapshots),
+                "btc_delta_changes": _format_delta_changes(state.btc_delta_changes),
                 f"btc_up_{BTC_MOVE_LEVEL_PCT}pct_time_left": _secs(state.btc_up_level_time_left),
                 f"btc_down_{BTC_MOVE_LEVEL_PCT}pct_time_left": _secs(state.btc_down_level_time_left),
                 "placed_time_left": _secs(state.placed_time_left),

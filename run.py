@@ -348,8 +348,12 @@ def parse_args():
                              "no duals. against: at exactly --against-min-streak in a row, buy the other side once "
                              "per streak (see --against-filter). "
                              "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
-                             "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
-                             "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
+                             "against and combo have their own trades file and can run beside another bot.) dual: "
+                             "after --enter-after seconds, if |BTC Δ from PTB| < --quiet-max-pct, lift an ask "
+                             "≤ --cheap-ask and limit the other @ --limit, else rest both @ --limit; "
+                             "--max-prev-move-pct still skips wild prior windows. "
+                             "(default: regime for 5m, dual otherwise)")
+
     parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
                         help="Against only. struct_rsi (default): against clear structure + RSI agree with structure. "
                              "struct: against clear structure only (no RSI gate; own trades file). "
@@ -397,6 +401,14 @@ def parse_args():
     parser.add_argument("--max-prev-move-pct", type=float, default=0.10, metavar="PCT",
                         help="Dual strategy: skip trading a window when the last one moved this many percent or more "
                              "(default 0.10; 0 = off).")
+    parser.add_argument("--enter-after", type=int, default=60, metavar="SECONDS_IN",
+                        help="Dual: earliest seconds into the window to evaluate entry (default 60; 0 = from start).")
+    parser.add_argument("--quiet-max-pct", type=float, default=0.03, metavar="PCT",
+                        help="Dual: require |BTC move from PTB| below this at entry (default 0.03; 0 = off).")
+    parser.add_argument("--cheap-ask", type=int, default=30, metavar="CENTS",
+                        help="Dual: if one ask is at or below this, buy it at the ask and limit the other @ --limit; "
+                             "else rest both @ --limit (default 30; 0 = always rest both).")
+
     parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
                              "even if it wins, the rest at --limit (default 0 = off; e.g. 50).")
@@ -460,6 +472,12 @@ def main():
         raise SystemExit("--trend-windows and --trend-against-min-move must be >= 0, --take-profit-at 0-99")
     if args.max_prev_move_pct < 0:
         raise SystemExit("--max-prev-move-pct must be >= 0")
+    if args.enter_after < 0:
+        raise SystemExit("--enter-after must be >= 0")
+    if args.quiet_max_pct < 0:
+        raise SystemExit("--quiet-max-pct must be >= 0")
+    if not 0 <= args.cheap_ask < 100:
+        raise SystemExit("--cheap-ask must be between 0 and 99")
     if args.hedge_at and not args.limit < args.hedge_at < 100:
         raise SystemExit("--hedge-at must be above --limit and below 100 (or 0 for off)")
     if not 0 <= args.stop_loss_at < duration * 60:
@@ -503,7 +521,8 @@ def main():
                         min_prev_move_pct=args.min_prev_move_pct, watch_from_pct=args.watch_from_pct,
                         watch_to_pct=args.watch_to_pct)
     elif strategy == "dual":
-        sim = DualSim(*sim_args, **common)
+        sim = DualSim(*sim_args, **common, enter_after_seconds=args.enter_after,
+                      quiet_max_pct=args.quiet_max_pct, cheap_cents=args.cheap_ask)
     elif strategy == "against":
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,

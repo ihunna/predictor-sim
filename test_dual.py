@@ -13,19 +13,98 @@ START = 1791813600  # 14:00 UTC = 10am ET
 END = START + 300
 
 
-def run_window(sim, ticks, start=START, end=END):
-    """ticks: list of (seconds_into_window, up_ask, down_ask)."""
+def run_window(sim, ticks, start=START, end=END, btc=None, ptb=None):
+    """ticks: list of (seconds_into_window, up_ask, down_ask). Optional flat btc/ptb for quiet gate."""
     sim.start_window(start, end, f"btc-updown-5m-{start}", "1", now=start)
     for offset, up, down in ticks:
-        sim.on_tick(start + offset, up, down)
+        sim.on_tick(start + offset, up, down,
+                    btc if btc is not None else 0.0,
+                    ptb if ptb is not None else 0.0)
     return sim.finish_window()
 
 
 def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=True,
-            stop_loss_min_cents=0):
+            stop_loss_min_cents=0, enter_after_seconds=0, quiet_max_pct=0.0, cheap_cents=0):
+    """Default gates off so older dual fill tests stay place-at-start / both-limits."""
     return DualSim("btc", 5, 30, 8, place_at, os.path.join(tmp, "trades.csv"), capital, "default",
                    hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds, stop_loss_live=stop_loss_live,
-                   stop_loss_min_cents=stop_loss_min_cents)
+                   stop_loss_min_cents=stop_loss_min_cents, enter_after_seconds=enter_after_seconds,
+                   quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents)
+
+
+def quiet_sim(tmp, limit=30, place_at=None, enter_after_seconds=60, quiet_max_pct=0.03, cheap_cents=30,
+              hedge_cents=0):
+    """Live dual defaults: enter 60s in, |Δ|<0.03%, lift ask≤30¢ else both @ limit."""
+    return DualSim("btc", 5, limit, 8, place_at, os.path.join(tmp, "trades.csv"), 100.0, "default",
+                   hedge_cents=hedge_cents, enter_after_seconds=enter_after_seconds,
+                   quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents)
+
+
+PTB = 100_000.0
+
+
+def test_quiet_dual_rest_both(tmp):
+    """At 60s in with tight delta and balanced book → rest both limits."""
+    sim = quiet_sim(tmp, limit=40)
+    # flat BTC; book stays ~50/50 until after entry, then both dip to 40
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (30, 0.50, 0.51),
+        (60, 0.50, 0.51),
+        (100, 0.39, 0.62),
+        (150, 0.62, 0.38),
+    ], btc=PTB, ptb=PTB)
+    assert state.placed_time_left == 240  # 60s in
+    assert state.action == "dual" and state.action_reason == "rest_both"
+    assert "rest_both" in state.notes
+    assert state.fill_type == "both"
+    assert not state.up_taker and not state.down_taker
+
+
+def test_quiet_dual_lift_cheap(tmp):
+    """At entry, one ask ≤30¢ → buy it at ask, limit the other."""
+    sim = quiet_sim(tmp, limit=40)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (60, 0.28, 0.73),  # Up really cheap at entry
+        (120, 0.70, 0.38),  # Down later hits limit
+    ], btc=PTB, ptb=PTB)
+    assert state.placed_time_left == 240
+    assert state.action == "dual_lift"
+    assert state.action_reason == "lift_up_28c"
+    assert state.up_taker and state.up_fill_price == 0.28
+    assert state.down_fill_time_left == 180 and not state.down_taker
+    assert state.fill_type == "both"
+    row = sim.settle(state, "Down", PTB, PTB, 0.0)
+    # cost 0.28*8 + 0.40*8 = 5.44; payout 8 → +2.56
+    assert row["pnl"] == "2.5600", row["pnl"]
+
+
+def test_quiet_dual_skips_loud_delta(tmp):
+    """|Δ| ≥ quiet max at entry → skip, no orders."""
+    sim = quiet_sim(tmp)
+    # +0.05% from PTB at entry
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (60, 0.50, 0.51),
+        (120, 0.30, 0.30),
+    ], btc=PTB * 1.0005, ptb=PTB)
+    assert not state.trading and state.placed_time_left is None
+    assert state.action == "skip"
+    assert "delta_" in state.action_reason and "not_quiet" in ";".join(state.notes)
+    assert sim.settle(state, "Up", PTB, PTB * 1.0005, 0.05)["pnl"] == "0.0000"
+
+
+def test_quiet_dual_waits_for_enter_after(tmp):
+    """Does not place before enter_after even if quiet and book is fine."""
+    sim = quiet_sim(tmp, enter_after_seconds=60)
+    state = run_window(sim, [
+        (0, 0.28, 0.73),
+        (30, 0.28, 0.73),
+        (59, 0.28, 0.73),
+    ], btc=PTB, ptb=PTB)
+    assert state.placed_time_left is None
+    assert "never_placed" in sim.settle(state, "Up", PTB, PTB, 0.0)["notes"]
 
 
 def test_both_fill_and_lowest_times(tmp):
@@ -379,10 +458,36 @@ def test_snapshots_into_window(tmp):
     assert row["up_ask_90s_in"] == "" and row["btc_move_pct_120s_in"] == ""
     # BTC went 1% below the price to beat at 35s in (265s left), then 0.05% above at 62s in (238s left)
     assert row["btc_down_0.05pct_time_left"] == 265 and row["btc_up_0.05pct_time_left"] == 238
+    # signed delta + asks only when the rounded % changes
+    assert row["btc_delta_changes"] == (
+        "0s:+0.0000@50/51;11s:+0.0050@51/50;29s:+0.0100@52/49;"
+        "31s:+0.0200@58/43;35s:-1.0000@10/91;62s:+0.0500@66/35"
+    ), row["btc_delta_changes"]
     sim.start_window(START + 300, END + 300, "s", "2", now=START + 300)
     sim.on_tick(START + 310, 0.5, 0.51, 100040.0, ptb)
     row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
     assert row["btc_up_0.05pct_time_left"] == "" and row["btc_down_0.05pct_time_left"] == ""
+    assert row["btc_delta_changes"] == "10s:+0.0400@50/51", row["btc_delta_changes"]
+
+
+def test_btc_delta_changes_on_change_only(tmp):
+    """Same rounded delta is not re-logged; sign shows direction; asks snapshotted on change."""
+    sim = new_sim(tmp)
+    sim.start_window(START, END, "s", "1", now=START)
+    ptb = 100000.0
+    ticks = [
+        (0, 0.50, 0.51, 100000.0),
+        (5, 0.50, 0.51, 100000.0),
+        (10, 0.48, 0.53, 100010.0),
+        (15, 0.47, 0.54, 100010.0),  # asks move but delta same → no new event
+        (40, 0.55, 0.46, 99990.0),
+    ]
+    for off, u, d, btc in ticks:
+        sim.on_tick(START + off, u, d, btc, ptb)
+    row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
+    assert row["btc_delta_changes"] == "0s:+0.0000@50/51;10s:+0.0100@48/53;40s:-0.0100@55/46", row[
+        "btc_delta_changes"
+    ]
 
 
 def test_tie(tmp):
@@ -905,6 +1010,10 @@ def main():
             test_one_side_win_and_loss,
             test_no_fill_and_unknown,
             test_place_at_and_taker_fill,
+            test_quiet_dual_rest_both,
+            test_quiet_dual_lift_cheap,
+            test_quiet_dual_skips_loud_delta,
+            test_quiet_dual_waits_for_enter_after,
             test_joined_late_not_traded,
             test_no_ptb_not_traded_even_on_time,
             test_prev_move_filter,
@@ -921,6 +1030,7 @@ def main():
             test_book_averages,
             test_open_and_end_asks,
             test_snapshots_into_window,
+            test_btc_delta_changes_on_change_only,
             test_tie,
             test_log_formats_and_capital_restore,
             test_old_log_upgraded_in_place,
