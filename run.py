@@ -37,20 +37,24 @@ socket.getaddrinfo = _ipv4_only_getaddrinfo
 
 NEXT_WINDOW_SUBSCRIBE_SECONDS = 60
 TICK_SECONDS = 0.2
-OFFICIAL_PRICE_WAIT_SECONDS = 10
+# 5m usually gets official end in ~3s; hourly (60m) often sits in PRICE_PROPOSED for minutes.
+OFFICIAL_PRICE_WAIT_SECONDS = {5: 10, 15: 30, 60: 120}
 LEADER_MIN_PREV_MOVE_PCT = {5: 0.10, 15: 0.15, 60: 0.35}  # about the biggest 30% of window moves
 # combo / fav move thresholds are set on 5m and scaled by how much bigger longer windows move (against: not scaled)
 STREAK_MOVE_PCT_5M = {"against_min_move": 0.02, "continue_max_move": 0.05, "fav_max_move": 0.02,
                       "trend_against_min_move": 0.05}
 MOVE_SCALE = {5: 1.0, 15: 1.5, 60: 3.5}
-RESOLUTION_CHECK_ATTEMPTS = 4
-RESOLUTION_CHECK_POLL_SECONDS = 15
+# dual quiet entry: 20% into the window (60s on 5m) and |Δ| gate scaled like other move thresholds
+DUAL_ENTER_AFTER_PCT = 0.20
+DUAL_QUIET_MAX_PCT_5M = 0.03
+
+# (attempts, poll_seconds): ~1m on 5m, ~2m on 15m, ~10m on 60m for GetMarket resolution fallback
+RESOLUTION_CHECK = {5: (4, 15), 15: (8, 15), 60: (30, 20)}
 EARLY_VOLUME_PCT = 20
 VOLUME_POLL_SECONDS = 15
 PREOPEN_SAMPLE_SECONDS = 10
 preopen_asks = {}  # window_start -> (up, down) of that market sampled PREOPEN_SAMPLE_SECONDS before it opened
-PREOPEN_SAMPLE_SECONDS = 10
-preopen_asks = {}  # window_start -> (up, down) of that market sampled PREOPEN_SAMPLE_SECONDS before it opened
+
 
 
 def prepare_next_window(ws, coin, duration, next_start):
@@ -95,8 +99,8 @@ def previous_window_prices(ws, coin, duration, window_start, timeout):
 
 def previous_window_move_pct(ws, coin, duration, state):
     """Last window's move in %, or None if unknown; also keeps its $ move on the state for the trades log."""
-    prev_open, prev_close = previous_window_prices(ws, coin, duration, state.window_start,
-                                                   OFFICIAL_PRICE_WAIT_SECONDS)
+    wait = OFFICIAL_PRICE_WAIT_SECONDS.get(duration, 10)
+    prev_open, prev_close = previous_window_prices(ws, coin, duration, state.window_start, wait)
     if not prev_open or not prev_close:
         return None
     state.prev_move = prev_close - prev_open
@@ -179,11 +183,20 @@ def _compare(start, end):
     return "Up" if end > start else "Down" if end < start else "Tie"
 
 
+def _inferred_prices(ws, state, price_to_beat):
+    """Feed stand-in for (open, close) when Predict.fun has not pushed official prices yet."""
+    start = price_to_beat or ws.first_price_from(state.window_start) or 0.0
+    end = ws.price_before(state.window_end) or ws.latest_price() or 0.0
+    return start, end
+
+
 def settle_window(ui, ws, sim, state, feed_id, duration, updown_file, price_to_beat):
-    """The result comes only from Predict.fun: the official start/end prices pushed on the socket (~3s after
-    the end), else the GetMarket resolution."""
+    """Prefer Predict.fun official start/end, else infer Up/Down from the live feed (same compare),
+    else wait on GetMarket resolution. Without a result, capital stays unsettled."""
     try:
-        official_start, official_end = ws.wait_for_end_price(state.market_id, OFFICIAL_PRICE_WAIT_SECONDS)
+        price_wait = OFFICIAL_PRICE_WAIT_SECONDS.get(duration, 10)
+        res_attempts, res_poll = RESOLUTION_CHECK.get(duration, (4, 15))
+        official_start, official_end = ws.wait_for_end_price(state.market_id, price_wait)
 
         def write_logs(outcome, start_price, end_price, notes, info=None):
             info = info or fetch_market(state.market_id)
@@ -199,34 +212,48 @@ def settle_window(ui, ws, sim, state, feed_id, duration, updown_file, price_to_b
             )
             return (float(row["pnl"]) if row["pnl"] else None), float(row["capital_after"])
 
+        def verify_resolution(logged_outcome, logged_source):
+            for _ in range(res_attempts):
+                time.sleep(res_poll)
+                info = fetch_market(state.market_id)
+                if info and info["resolved"]:
+                    if info["resolution"] != logged_outcome:
+                        ui.event(f"⚠️ {hhmm(state.window_start)} window resolved {info['resolution']} on Predict.fun, "
+                                 f"logged as {logged_outcome} from {logged_source}")
+                    return
+
         if official_start and official_end:
-            # The GetMarket resolution can lag by minutes, so it is only checked a few times afterwards.
             outcome = _compare(official_start, official_end)
             _, pnl = sim.compute_result(state, outcome, state.maker_fee_bps, state.taker_fee_bps)
             ui.window_ended(state, outcome, official_start, official_end, pnl, "official")
             pnl, capital = write_logs(outcome, official_start, official_end, ["official_prices"])
             ui.confirmed(state, outcome, outcome, pnl, capital, "Predict.fun")
-            for _ in range(RESOLUTION_CHECK_ATTEMPTS):
-                time.sleep(RESOLUTION_CHECK_POLL_SECONDS)
-                info = fetch_market(state.market_id)
-                if info and info["resolved"]:
-                    if info["resolution"] != outcome:
-                        ui.event(f"⚠️ {hhmm(state.window_start)} window resolved {info['resolution']} on Predict.fun, "
-                                 f"logged as {outcome} from the official prices")
-                    return
+            verify_resolution(outcome, "the official prices")
+            return
+
+        inferred_start, inferred_end = _inferred_prices(ws, state, price_to_beat)
+        inferred_outcome = _compare(inferred_start, inferred_end)
+        if inferred_outcome != "UNKNOWN":
+            _, pnl = sim.compute_result(state, inferred_outcome, state.maker_fee_bps, state.taker_fee_bps)
+            ui.window_ended(state, inferred_outcome, inferred_start, inferred_end, pnl, "inferred")
+            pnl, capital = write_logs(inferred_outcome, inferred_start, inferred_end, ["inferred_prices"])
+            ui.confirmed(state, inferred_outcome, inferred_outcome, pnl, capital, "feed inference")
+            verify_resolution(inferred_outcome, "feed inference")
             return
 
         info = None
-        for _ in range(RESOLUTION_CHECK_ATTEMPTS):
+        for _ in range(res_attempts):
             info = fetch_market(state.market_id) or info
             if info and info["resolved"]:
                 break
-            time.sleep(RESOLUTION_CHECK_POLL_SECONDS)
+            time.sleep(res_poll)
         outcome = info["resolution"] if info and info["resolved"] else "UNKNOWN"
+        start = official_start or inferred_start
+        end = official_end or inferred_end
         notes = ["resolution_only"] if outcome != "UNKNOWN" else ["no_official_result"]
         _, pnl = sim.compute_result(state, outcome, state.maker_fee_bps, state.taker_fee_bps)
-        ui.window_ended(state, outcome, official_start, official_end, pnl, "resolution")
-        pnl, capital = write_logs(outcome, official_start, official_end, notes, info)
+        ui.window_ended(state, outcome, start, end, pnl, "resolution")
+        pnl, capital = write_logs(outcome, start, end, notes, info)
         ui.confirmed(state, outcome, outcome, pnl, capital, "Predict.fun")
     except Exception as e:
         ui.event(f"⚠️ Settling window {state.window_start} failed: {e}")
@@ -403,16 +430,22 @@ def parse_args():
                         help="Dual strategy: skip trading a window when the last one moved this many percent or more "
                              "(default 0 = off; try 0.10 to skip after wild prior windows).")
 
-    parser.add_argument("--enter-after", type=int, default=60, metavar="SECONDS_IN",
-                        help="Dual: earliest seconds into the window to evaluate entry (default 60; 0 = from start).")
-    parser.add_argument("--quiet-max-pct", type=float, default=0.03, metavar="PCT",
-                        help="Dual: require |BTC move from PTB| below this at entry (default 0.03; 0 = off).")
+    parser.add_argument("--enter-after", type=int, default=None, metavar="SECONDS_IN",
+                        help="Dual: earliest seconds into the window to evaluate entry "
+                             "(default: 20%% of the window → 60s on 5m, 180s on 15m, 720s on 60m; 0 = from start).")
+    parser.add_argument("--quiet-max-pct", type=float, default=None, metavar="PCT",
+                        help="Dual: require |BTC move from PTB| below this at entry "
+                             "(default: 0.03%% on 5m, scaled by duration like other move gates → "
+                             "~0.045 on 15m, ~0.105 on 60m; 0 = off).")
+
     parser.add_argument("--cheap-ask", type=int, default=30, metavar="CENTS",
                         help="Dual: if one ask is at or below this, do not lift — rest --cheap-deep on that side "
                              "and complement the other only after it fills; else rest both @ --limit "
                              "(default 30; 0 = always rest both).")
     parser.add_argument("--cheap-deep", type=int, default=10, metavar="CENTS",
                         help="Dual: deep limit on the already-cheap side (default 10; 0 = disable deep path).")
+
+
 
 
     parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
@@ -478,8 +511,15 @@ def main():
         raise SystemExit("--trend-windows and --trend-against-min-move must be >= 0, --take-profit-at 0-99")
     if args.max_prev_move_pct < 0:
         raise SystemExit("--max-prev-move-pct must be >= 0")
+    move_scale = MOVE_SCALE.get(duration, (duration / 5) ** 0.5)
+    if args.enter_after is None:
+        args.enter_after = int(duration * 60 * DUAL_ENTER_AFTER_PCT)
+    if args.quiet_max_pct is None:
+        args.quiet_max_pct = round(DUAL_QUIET_MAX_PCT_5M * move_scale, 4)
     if args.enter_after < 0:
         raise SystemExit("--enter-after must be >= 0")
+    if args.enter_after >= duration * 60:
+        raise SystemExit(f"--enter-after must be below the {duration * 60}s window length")
     if args.quiet_max_pct < 0:
         raise SystemExit("--quiet-max-pct must be >= 0")
     if not 0 <= args.cheap_ask < 100:

@@ -83,7 +83,6 @@ def test_quiet_dual_deep_then_complement(tmp):
     assert row["pnl"] == "1.6000", row["pnl"]
 
 
-
 def test_quiet_dual_deep_never_fills(tmp):
     """Deep path: ask was ≤30 but never reaches 10¢ → no complement, no losing lift."""
     sim = quiet_sim(tmp, limit=40)

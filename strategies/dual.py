@@ -6,7 +6,11 @@ If one ask is at or below ``cheap_cents``, does **not** buy at the ask — rests
 at ``cheap_deep_cents`` on that side; when it fills, rests the other side at a complementary
 price that keeps the same locked edge as both @ ``limit_cents``.
 Otherwise rests ``limit_cents`` on both sides.
+
+``run.py`` scales the defaults by duration: enter-after ≈ 20% of the window, quiet-max-pct
+from 0.03% on 5m via ``MOVE_SCALE`` (same family as other move gates).
 """
+
 from sim import BaseSim, Order
 
 
