@@ -440,8 +440,8 @@ def parse_args():
     parser.add_argument("--strand-exit", type=int, default=60, metavar="SECONDS_LEFT",
                         help="Dual: if only one side filled, sell it at bid with this many seconds left "
                              "(default 60; 0 = hold).")
-    parser.add_argument("--no-balanced-dual", action="store_true",
-                        help="Dual: skip windows that never print the cheap+high signal (no both@limit fallback).")
+    parser.add_argument("--balanced-dual", action="store_true",
+                        help="Dual: if no cheap ask prints, also rest both @--limit (off by default — skew only).")
 
     parser.add_argument("--scalp-entry", type=int, default=20, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 20).")
@@ -591,7 +591,7 @@ def main():
         sim = DualSim(*sim_args, **common, enter_after_seconds=args.enter_after,
                       quiet_max_pct=args.quiet_max_pct, cheap_cents=args.cheap_ask,
                       pair_cents=args.pair_cents, strand_exit_seconds=args.strand_exit,
-                      allow_balanced=not args.no_balanced_dual)
+                      allow_balanced=args.balanced_dual)
     elif strategy == "scalp":
         sim = ScalpSim(*sim_args, **common, entry_cents=args.scalp_entry,
                        target_cents=args.scalp_target, exit_left_seconds=args.scalp_exit_left,

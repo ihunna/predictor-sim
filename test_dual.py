@@ -33,7 +33,7 @@ def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=
 
 
 def quiet_sim(tmp, limit=40, place_at=None, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=30,
-              pair_cents=80, strand_exit_seconds=60, hedge_cents=0, allow_balanced=True):
+              pair_cents=80, strand_exit_seconds=60, hedge_cents=0, allow_balanced=False):
     """Live dual: |Δ|≤quiet + ask≤cheap → lift cheap + other @ pair−ask; else both @ limit."""
     return DualSim("btc", 5, limit, 8, place_at, os.path.join(tmp, "trades.csv"), 100.0, "default",
                    hedge_cents=hedge_cents, enter_after_seconds=enter_after_seconds,
@@ -46,8 +46,8 @@ PTB = 100_000.0
 
 
 def test_quiet_dual_rest_both(tmp):
-    """Quiet + balanced book → rest both limits."""
-    sim = quiet_sim(tmp, limit=40)
+    """Quiet + balanced book → rest both limits (only when allow_balanced)."""
+    sim = quiet_sim(tmp, limit=40, allow_balanced=True)
     state = run_window(sim, [
         (0, 0.50, 0.51),
         (30, 0.50, 0.51),

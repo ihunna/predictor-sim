@@ -24,7 +24,7 @@ class DualSim(BaseSim):
     start_mode = "dual"
 
     def __init__(self, *args, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=30,
-                 pair_cents=80, strand_exit_seconds=0, allow_balanced=True, **kwargs):
+                 pair_cents=80, strand_exit_seconds=0, allow_balanced=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.enter_after_seconds = max(0, int(enter_after_seconds))
         self.quiet_max_pct = float(quiet_max_pct)
@@ -108,7 +108,10 @@ class DualSim(BaseSim):
         if skewed and not delta_ok:
             return []
 
-        if not self.allow_balanced or not delta_ok:
+        # cheap_cents==0 → balanced-only; otherwise only if --balanced-dual
+        if self.cheap_cents > 0 and not self.allow_balanced:
+            return []
+        if not delta_ok:
             return []
 
         state.action = "dual"
