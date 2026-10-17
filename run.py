@@ -350,8 +350,9 @@ def parse_args():
                              "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
                              "against and combo have their own trades file and can run beside another bot.) dual: the old dual every window with the "
                              "--max-prev-move-pct filter. (default: regime for 5m, dual otherwise)")
-    parser.add_argument("--against-filter", choices=("struct_rsi", "bare", "rsi"), default="struct_rsi",
+    parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
                         help="Against only. struct_rsi (default): against clear structure + RSI agree with structure. "
+                             "struct: against clear structure only (no RSI gate; own trades file). "
                              "bare: every exact streak, skip only not-broken (no struct/RSI gate; own trades file). "
                              "rsi: no structure gate; only fade when the bet agrees with RSI as trend "
                              "(Up if RSI>55, Down if RSI<45; mid/unknown skip; own trades file).")

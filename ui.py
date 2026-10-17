@@ -552,6 +552,9 @@ class Dashboard:
             elif filt == "rsi":
                 skip = (f"against[{filt}]: exactly {sim.against_min_streak}, fade only with RSI trend "
                         f"(Up if RSI>{sim.rsi_agree_up:g} / Down if RSI<{sim.rsi_agree_down:g}){vs_avg} · {tp}")
+            elif filt == "struct":
+                skip = (f"against[{filt}]: exactly {sim.against_min_streak} against structure only "
+                        f"(no RSI gate){vs_avg} → other side · {tp}")
             else:
                 skip = (f"against[{filt}]: exactly {sim.against_min_streak} against structure + RSI agree"
                         f" (up>{sim.rsi_agree_up:g}/down<{sim.rsi_agree_down:g}){vs_avg} → other side · {tp}")

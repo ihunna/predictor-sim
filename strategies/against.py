@@ -4,6 +4,8 @@ Filter modes (``against_filter``):
 - ``struct_rsi`` (default): streak must be against clear structure and RSI must agree with that structure
   (up → RSI > ``rsi_agree_up``, down → RSI < ``rsi_agree_down``). With-structure / mixed / unknown /
   RSI mid/disagree/unknown → skip.
+- ``struct``: streak must be against clear structure (non-trending side); no RSI gate. With-structure /
+  mixed / unknown → skip. RSI is logged only.
 - ``bare``: no structure/RSI gate — every exact-N streak (still skip not-broken). Structure/RSI are logged.
 - ``rsi``: no structure gate — use RSI as trend and do not fade against it (bet Up only if RSI >
   ``rsi_agree_up``, bet Down only if RSI < ``rsi_agree_down``). Mid/unknown RSI → skip.
@@ -17,7 +19,7 @@ from .combo import ComboSim
 # RSI must lean with structure (struct_rsi) or with the bet side (rsi filter).
 RSI_AGREE_UP = 55
 RSI_AGREE_DOWN = 45
-AGAINST_FILTERS = ("struct_rsi", "bare", "rsi")
+AGAINST_FILTERS = ("struct_rsi", "struct", "bare", "rsi")
 
 
 class AgainstSim(ComboSim):
@@ -47,6 +49,9 @@ class AgainstSim(ComboSim):
             gate = (f"with RSI-as-trend only (buy Up only if RSI>{self.rsi_agree_up:g}, "
                     f"Down only if RSI<{self.rsi_agree_down:g}; no structure gate)")
             skip = "RSI mid/unknown / fade-against-RSI"
+        elif self.against_filter == "struct":
+            gate = "against the price structure only (non-trending side; no RSI gate)"
+            skip = "trending-side streak / mixed / unknown structure"
         else:
             gate = (f"against the price structure (non-trending side) with RSI agreeing "
                     f"(up>{self.rsi_agree_up:g} / down<{self.rsi_agree_down:g})")
@@ -125,6 +130,14 @@ class AgainstSim(ComboSim):
                     return "skip", f"{reason}_rsi_against_trend"
                 else:
                     return "skip", f"{reason}_rsi_mid"
+        elif self.against_filter == "struct":
+            if not structure:
+                return "skip", f"{reason}_structure_unknown"
+            if structure == "mixed":
+                return "skip", reason
+            if structure == side.lower():
+                return "skip", f"{reason}_with_structure"
+            # clear against-structure; RSI logged only
         else:  # struct_rsi (default)
             if not structure:
                 return "skip", f"{reason}_structure_unknown"

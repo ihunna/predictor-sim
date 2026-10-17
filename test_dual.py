@@ -678,8 +678,8 @@ def test_against_rsi_agree(tmp):
     assert state.bet_side == "Up"
 
 
-def test_against_filter_bare_and_rsi(tmp):
-    """bare takes every exact-3; rsi only fades with the RSI trend (not against it)."""
+def test_against_filter_bare_rsi_and_struct(tmp):
+    """bare / rsi / struct-only filters."""
     three_up = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
                 START - 1200: ["Down", True]}
     three_down = {START - 300: ["Down", False], START - 600: ["Down", False], START - 900: ["Down", True],
@@ -708,6 +708,21 @@ def test_against_filter_bare_and_rsi(tmp):
     # fade Up → bet Down while RSI high → against RSI trend → skip
     assert rsi.regime_decision(START, None, 0.05) == (
         "skip", "filter_rsi_streak_3_up_move_+0.050pct_1.00x_avg_structure_up_rsi_100_rsi_against_trend")
+
+    # struct only: against clear structure, no RSI gate (mid/disagree still take)
+    st = against_sim(tmp, avg_windows=12, rsi_windows=4, against_filter="struct")
+    st.history = dict(three_down)
+    state = st.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    st.moves = up_structure_moves(12)
+    for i in range(1, 5):
+        st.moves[START - i * 300] = -0.05  # RSI disagree with up structure
+    assert st.regime_decision(START, None, -0.05) == (
+        "against", "filter_struct_streak_3_down_move_-0.050pct_1.00x_avg_structure_up_rsi_0")
+    assert state.bet_side == "Up"
+    st.history = dict(three_up)
+    st.moves = up_structure_moves(12)
+    assert st.regime_decision(START, None, 0.05) == (
+        "skip", "filter_struct_streak_3_up_move_+0.050pct_1.00x_avg_structure_up_rsi_100_with_structure")
 
 
 def test_combo_strategy(tmp):
