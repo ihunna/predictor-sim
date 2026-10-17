@@ -33,11 +33,12 @@ def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=
 
 
 def quiet_sim(tmp, limit=30, place_at=None, enter_after_seconds=60, quiet_max_pct=0.03, cheap_cents=30,
-              hedge_cents=0):
-    """Live dual defaults: enter 60s in, |Δ|<0.03%, lift ask≤30¢ else both @ limit."""
+              cheap_deep_cents=10, hedge_cents=0):
+    """Live dual defaults: enter 60s in, |Δ|<0.03%, deep@10 if ask≤30 else both @ limit."""
     return DualSim("btc", 5, limit, 8, place_at, os.path.join(tmp, "trades.csv"), 100.0, "default",
                    hedge_cents=hedge_cents, enter_after_seconds=enter_after_seconds,
-                   quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents)
+                   quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents,
+                   cheap_deep_cents=cheap_deep_cents)
 
 
 PTB = 100_000.0
@@ -61,24 +62,42 @@ def test_quiet_dual_rest_both(tmp):
     assert not state.up_taker and not state.down_taker
 
 
-def test_quiet_dual_lift_cheap(tmp):
-    """At entry, one ask ≤30¢ → buy it at ask; other limit complements to same lock as 40/40."""
+def test_quiet_dual_deep_then_complement(tmp):
+    """At entry ask≤30¢ → rest deep @10¢ (no lift); after fill, complement other for +20¢ lock."""
     sim = quiet_sim(tmp, limit=40)
     state = run_window(sim, [
         (0, 0.50, 0.51),
-        (60, 0.28, 0.73),  # Up really cheap at entry → other limit = 80-28 = 52¢
-        (120, 0.70, 0.48),  # Down hits 48 ≤ 52
+        (60, 0.28, 0.73),   # Up cheap → only deep Up @10¢, do not buy @28
+        (90, 0.09, 0.92),   # Up hits 9 → fills deep @10 maker
+        (150, 0.75, 0.70),  # Down at complement 70¢
     ], btc=PTB, ptb=PTB)
     assert state.placed_time_left == 240
-    assert state.action == "dual_lift"
-    assert state.action_reason == "lift_up_28c_other_52c"
-    assert state.up_taker and state.up_fill_price == 0.28
-    # other rests @52¢; later ask 48 fills as maker at the limit (not the ask)
-    assert state.down_fill_time_left == 180 and state.down_fill_price == 0.52 and not state.down_taker
+    assert state.action == "dual_deep"
+    assert "deep_up_10c" in state.action_reason
+    assert state.up_fill_price == 0.10 and not state.up_taker  # rested @10, filled as maker
+    assert any("complement_down_70c" in n for n in state.notes)
+    assert state.down_fill_price == 0.70
     assert state.fill_type == "both"
     row = sim.settle(state, "Down", PTB, PTB, 0.0)
-    # cost 0.28*8 + 0.52*8 = 6.40; payout 8 → +1.60  (+20¢/pair, same lock as both @40)
+    # cost 0.10*8 + 0.70*8 = 6.40; payout 8 → +1.60
     assert row["pnl"] == "1.6000", row["pnl"]
+
+
+
+def test_quiet_dual_deep_never_fills(tmp):
+    """Deep path: ask was ≤30 but never reaches 10¢ → no complement, no losing lift."""
+    sim = quiet_sim(tmp, limit=40)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (60, 0.28, 0.73),
+        (120, 0.25, 0.76),
+        (200, 0.22, 0.79),
+    ], btc=PTB, ptb=PTB)
+    assert state.action == "dual_deep"
+    assert state.up_fill_time_left is None and state.down_fill_time_left is None
+    assert state.fill_type == "none"
+    assert not getattr(state, "dual_complement_placed", False)
+    assert sim.settle(state, "Down", PTB, PTB, 0.0)["pnl"] == "0.0000"
 
 
 def test_quiet_dual_skips_loud_delta(tmp):
@@ -1013,7 +1032,8 @@ def main():
             test_no_fill_and_unknown,
             test_place_at_and_taker_fill,
             test_quiet_dual_rest_both,
-            test_quiet_dual_lift_cheap,
+            test_quiet_dual_deep_then_complement,
+            test_quiet_dual_deep_never_fills,
             test_quiet_dual_skips_loud_delta,
             test_quiet_dual_waits_for_enter_after,
             test_joined_late_not_traded,

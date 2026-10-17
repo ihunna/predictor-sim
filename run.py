@@ -349,8 +349,9 @@ def parse_args():
                              "per streak (see --against-filter). "
                              "combo: streaks of 3+ only, bet to break against the trend and to continue with it. (fav, "
                              "against and combo have their own trades file and can run beside another bot.) dual: "
-                             "after --enter-after seconds, if |BTC Δ from PTB| < --quiet-max-pct, lift an ask "
-                             "≤ --cheap-ask and limit the other @ --limit, else rest both @ --limit; "
+                             "after --enter-after seconds, if |BTC Δ from PTB| < --quiet-max-pct, if an ask "
+                             "≤ --cheap-ask rest a deep limit @ --cheap-deep (then complement the other after fill), "
+                             "else rest both @ --limit; "
                              "--max-prev-move-pct still skips wild prior windows. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -407,8 +408,12 @@ def parse_args():
     parser.add_argument("--quiet-max-pct", type=float, default=0.03, metavar="PCT",
                         help="Dual: require |BTC move from PTB| below this at entry (default 0.03; 0 = off).")
     parser.add_argument("--cheap-ask", type=int, default=30, metavar="CENTS",
-                        help="Dual: if one ask is at or below this, buy it at the ask and limit the other @ --limit; "
-                             "else rest both @ --limit (default 30; 0 = always rest both).")
+                        help="Dual: if one ask is at or below this, do not lift — rest --cheap-deep on that side "
+                             "and complement the other only after it fills; else rest both @ --limit "
+                             "(default 30; 0 = always rest both).")
+    parser.add_argument("--cheap-deep", type=int, default=10, metavar="CENTS",
+                        help="Dual: deep limit on the already-cheap side (default 10; 0 = disable deep path).")
+
 
     parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
@@ -479,6 +484,10 @@ def main():
         raise SystemExit("--quiet-max-pct must be >= 0")
     if not 0 <= args.cheap_ask < 100:
         raise SystemExit("--cheap-ask must be between 0 and 99")
+    if not 0 <= args.cheap_deep < 100:
+        raise SystemExit("--cheap-deep must be between 0 and 99")
+    if args.cheap_ask and args.cheap_deep and args.cheap_deep > args.cheap_ask:
+        raise SystemExit("--cheap-deep should be at or below --cheap-ask")
     if args.hedge_at and not args.limit < args.hedge_at < 100:
         raise SystemExit("--hedge-at must be above --limit and below 100 (or 0 for off)")
     if not 0 <= args.stop_loss_at < duration * 60:
@@ -523,7 +532,8 @@ def main():
                         watch_to_pct=args.watch_to_pct)
     elif strategy == "dual":
         sim = DualSim(*sim_args, **common, enter_after_seconds=args.enter_after,
-                      quiet_max_pct=args.quiet_max_pct, cheap_cents=args.cheap_ask)
+                      quiet_max_pct=args.quiet_max_pct, cheap_cents=args.cheap_ask,
+                      cheap_deep_cents=args.cheap_deep)
     elif strategy == "against":
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
