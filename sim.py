@@ -520,7 +520,7 @@ class BaseSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.0, cancel_left_pct=67.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14,
-                 savior_left_pct=25.0):
+                 savior_left_pct=50.0):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
@@ -530,7 +530,7 @@ class BaseSim:
         self.cancel_left_pct = cancel_left_pct
         self.hedge_cents = hedge_cents
         self.hedge = hedge_cents / 100.0
-        # 0 = off; default 25% of window left (15:00 on 60m, 3:45 on 15m, 1:15 on 5m)
+        # 0 = off; default 50% of window left (30:00 on 60m, 7:30 on 15m, 2:30 on 5m)
         self.savior_left_pct = max(0.0, float(savior_left_pct))
         self.coin = coin
         self.duration = duration
@@ -631,7 +631,7 @@ class BaseSim:
         return self.duration * 60 * self.cancel_left_pct / 100.0
 
     def savior_left_seconds(self):
-        """Time left when savior arms (default 25% of window). 0 if disabled."""
+        """Time left when savior arms (default 50% of window). 0 if disabled."""
         if self.savior_left_pct <= 0:
             return 0.0
         return self.duration * 60 * self.savior_left_pct / 100.0

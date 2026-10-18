@@ -288,13 +288,13 @@ def test_scalp_only_when_mixed(tmp):
 
 
 def test_savior_scales_with_duration(tmp):
-    """Default 25% left → 1:15 / 3:45 / 15:00 on 5m / 15m / 60m."""
-    s5 = scalp_sim(tmp, savior_left_pct=25.0, duration=5)
-    s15 = scalp_sim(tmp, savior_left_pct=25.0, duration=15)
-    s60 = scalp_sim(tmp, savior_left_pct=25.0, duration=60)
-    assert s5.savior_left_seconds() == 75
-    assert s15.savior_left_seconds() == 225
-    assert s60.savior_left_seconds() == 900
+    """Default 50% left → 2:30 / 7:30 / 30:00 on 5m / 15m / 60m."""
+    s5 = scalp_sim(tmp, savior_left_pct=50.0, duration=5)
+    s15 = scalp_sim(tmp, savior_left_pct=50.0, duration=15)
+    s60 = scalp_sim(tmp, savior_left_pct=50.0, duration=60)
+    assert s5.savior_left_seconds() == 150
+    assert s15.savior_left_seconds() == 450
+    assert s60.savior_left_seconds() == 1800
     assert scalp_sim(tmp, savior_left_pct=0.0).savior_left_seconds() == 0.0
 
 
