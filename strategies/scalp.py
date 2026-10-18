@@ -1,8 +1,6 @@
 """Cheap-side scalper: buy a dumped ask, take profit on bid, else full loss at settle.
 
-Same structure gate as dual (default: only when PriceStructure is mixed). RSI is refreshed
-onto the window for the UI/log the same way; it is not an extra skip filter (dual has none).
-
+Same optional structure gate as dual (default: off — trade any structure; log struct/RSI).
 Default path: buy ≤30¢, TP bid ≥60¢. Optional ``target_cents=0`` / time-exit / confirmed stop
 via flags. Bid is inferred as ``1 − other_ask`` (same convention as against take-profit).
 """
@@ -18,7 +16,7 @@ class ScalpSim(BaseSim):
     start_mode = "against"
 
     def __init__(self, *args, entry_cents=30, target_cents=60, exit_left_seconds=0,
-                 stop_cents=0, stop_confirm_seconds=5, require_structure="mixed", **kwargs):
+                 stop_cents=0, stop_confirm_seconds=5, require_structure="", **kwargs):
         # Block new entries / cancel unfilled once cancel_left_pct of the window is left
         # (default 67% ≈ first third only; 60m scalp: late ≤30¢ fills rarely reach TP60).
         kwargs.setdefault("cancel_left_pct", 67.0)
@@ -75,14 +73,14 @@ class ScalpSim(BaseSim):
         return round(1.0 - other, 4)
 
     def _structure_ok(self, state):
-        """Same gate as dual: refresh trend; require mixed (or whatever require_structure is)."""
-        if not self.require_structure:
-            return True
+        """Same as dual: always refresh for log/UI; gate only when require_structure is set."""
         avg, vs_avg, rsi, structure = self.refresh_structure(state.window_start)
         state.avg_move_pct = avg
         state.move_vs_avg = vs_avg
         state.rsi = rsi
         state.structure = structure or ""
+        if not self.require_structure:
+            return True
         return (structure or "").lower() == self.require_structure
 
     def _first_orders(self, state, remaining, up_ask, down_ask):

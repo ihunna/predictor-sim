@@ -1,9 +1,9 @@
-"""Dual: rest both sides at the limit, only when BTC structure is mixed.
+"""Dual: rest both sides at the limit.
 
-No quiet-Δ, enter-after, cheap-skew, or prev-move gate by default. Structure comes from
-the shared ``PriceStructure`` (official window moves; lookbacks scale with duration).
-Unknown / up / down → skip. Unfilled both-sides cancel at ``cancel_left_pct`` of the window
-(duration-relative; default 67% left ≈ only the first third of the window).
+No quiet-Δ, enter-after, cheap-skew, prev-move, or structure gate by default (gather data;
+``require_structure`` can re-enable later). Structure/RSI still refreshed for the log/UI.
+Unfilled both-sides cancel at ``cancel_left_pct`` of the window (duration-relative;
+default 67% left ≈ only the first third of the window).
 """
 
 from logs import format_time
@@ -11,12 +11,12 @@ from sim import BaseSim, Order
 
 
 class DualSim(BaseSim):
-    """Both limits at ``limit_cents`` when structure == mixed."""
+    """Both limits at ``limit_cents``; optional structure gate via ``require_structure``."""
 
     strategy = "dual"
     start_mode = "dual"
 
-    def __init__(self, *args, require_structure="mixed", enter_after_seconds=0, quiet_max_pct=0.0,
+    def __init__(self, *args, require_structure="", enter_after_seconds=0, quiet_max_pct=0.0,
                  cheap_cents=0, pair_cents=70, strand_exit_seconds=0, allow_balanced=True, **kwargs):
         # Cancel no-fill is duration-relative via cancel_left_pct (default 67% left ≈ first third).
         kwargs.setdefault("cancel_left_pct", 67.0)
@@ -69,14 +69,14 @@ class DualSim(BaseSim):
         return abs(move) <= self.quiet_max_pct + 1e-12
 
     def _structure_ok(self, state):
-        """Refresh trend from prior windows; require mixed (or whatever require_structure is)."""
-        if not self.require_structure:
-            return True
+        """Refresh trend for log/UI; gate only when require_structure is set."""
         avg, vs_avg, rsi, structure = self.refresh_structure(state.window_start)
         state.avg_move_pct = avg
         state.move_vs_avg = vs_avg
         state.rsi = rsi
         state.structure = structure or ""
+        if not self.require_structure:
+            return True
         return (structure or "").lower() == self.require_structure
 
     def _complement_cents(self, cheap_ask_cents):

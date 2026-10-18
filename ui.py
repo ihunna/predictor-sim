@@ -610,7 +610,7 @@ class Dashboard:
             if state is not None and state.action:
                 skip += f" · {state.action}"
         elif sim.strategy == "dual":
-            need = getattr(sim, "require_structure", "mixed") or "any"
+            need = getattr(sim, "require_structure", "") or "any"
             cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
                       if sim.cancel_left_pct > 0 else "no cancel")
             savior = (f"savior @{format_time(sim.savior_left_seconds())} left"
@@ -620,7 +620,7 @@ class Dashboard:
             if state is not None and state.action:
                 skip += f" · {state.action}"
         elif sim.strategy == "scalp":
-            need = getattr(sim, "require_structure", "mixed") or "any"
+            need = getattr(sim, "require_structure", "") or "any"
             tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
             stop = (f"stop ≤{sim.stop_cents}¢×{sim.stop_confirm_seconds}s"
                     if getattr(sim, "stop_cents", 0) > 0 else "no stop")

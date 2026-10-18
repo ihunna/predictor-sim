@@ -24,6 +24,7 @@ DEFAULT_REMOTE_DIR = "~/predictor-sim"
 DEFAULT_FILES = [
     "*-predict-leader-trades.csv",
     "*-predict-dual-trades.csv",
+    "*-predict-scalp-trades.csv",
     "*-predict-fav-trades.csv",
     "*-predict-against-trades.csv",
     "*-predict-combo-trades.csv",

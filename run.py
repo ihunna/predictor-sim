@@ -174,7 +174,7 @@ def _structure_gate_reason(sim, state, prev_move):
 
 
 def decide_dual(ui, sim, state, prev_move):
-    """Refresh structure/RSI, then place both limits only when mixed (same gate as scalp)."""
+    """Refresh structure/RSI (always logged); optional require_structure skip; else place both limits."""
     reason, streak = _structure_gate_reason(sim, state, prev_move)
     sim.resolve_decision(state, reason)
     if reason:
@@ -185,7 +185,7 @@ def decide_dual(ui, sim, state, prev_move):
 
 
 def decide_scalp(ui, sim, state, prev_move):
-    """Same structure/RSI refresh + structure gate as dual; then watch for ask≤entry."""
+    """Refresh structure/RSI (always logged); optional require_structure skip; else watch ask≤entry."""
     reason, streak = _structure_gate_reason(sim, state, prev_move)
     sim.resolve_decision(state, reason)
     tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
@@ -429,10 +429,11 @@ def parse_args():
     parser.add_argument("--strategy",
                         choices=("leader", "regime", "fav", "against", "combo", "dual", "scalp"), default=None,
                         help="leader / regime / fav / against / combo: see prior docs. "
-                             "dual: both @--limit (default 30¢) only when BTC structure is mixed "
+                             "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: buy ask≤--scalp-entry when structure matches --dual-structure (default mixed), "
+                             "scalp: buy ask≤--scalp-entry (any structure by default), "
                              "TP bid≥--scalp-target (default 30→60; miss=−entry). "
+                             "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
     parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
@@ -499,9 +500,10 @@ def parse_args():
     parser.add_argument("--balanced-dual", action="store_true",
                         help="Dual skew: if cheap never prints, also rest both @--limit (default dual already "
                              "rests both when structure is mixed).")
-    parser.add_argument("--dual-structure", default="mixed", metavar="NAME",
+    parser.add_argument("--dual-structure", default="", metavar="NAME",
                         help="Dual and scalp: only trade when PriceStructure equals this "
-                             "(default mixed; empty = any). RSI is logged/shown, not gated.")
+                             "(default empty = any / ungated to gather data; set mixed|up|down to gate). "
+                             "RSI is always logged/shown, never gated.")
 
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 30; 5m replay).")
@@ -595,7 +597,7 @@ def main():
         raise SystemExit(f"--enter-after must be below the {duration * 60}s window length")
     if args.quiet_max_pct < 0:
         raise SystemExit("--quiet-max-pct must be >= 0")
-    if getattr(args, "dual_structure", "mixed") not in ("", "mixed", "up", "down"):
+    if getattr(args, "dual_structure", "") not in ("", "mixed", "up", "down"):
         raise SystemExit("--dual-structure must be mixed, up, down, or empty")
     if not 0 <= args.cheap_ask < 100:
         raise SystemExit("--cheap-ask must be between 0 and 99")
@@ -659,7 +661,7 @@ def main():
                         min_prev_move_pct=args.min_prev_move_pct, watch_from_pct=args.watch_from_pct,
                         watch_to_pct=args.watch_to_pct)
     elif strategy == "dual":
-        # Mixed-structure both@limit; no-fill cancel is --cancel-left-pct of the window (duration-relative).
+        # Both@limit; structure gate optional via --dual-structure (default off).
         dual_common = dict(common)
         dual_common["stop_loss_seconds"] = 0
         sim = DualSim(*sim_args, **dual_common, require_structure=args.dual_structure,
@@ -668,7 +670,7 @@ def main():
                       strand_exit_seconds=args.strand_exit,
                       allow_balanced=True if args.cheap_ask == 0 else args.balanced_dual)
     elif strategy == "scalp":
-        # Same structure gate as dual; no-fill cancel via --cancel-left-pct (duration-relative).
+        # Same optional structure gate as dual; no-fill cancel via --cancel-left-pct.
         scalp_common = dict(common)
         scalp_common["stop_loss_seconds"] = 0
         sim = ScalpSim(*sim_args, **scalp_common, entry_cents=args.scalp_entry,
