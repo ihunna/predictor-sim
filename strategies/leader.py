@@ -44,12 +44,9 @@ class LeaderSim(BaseSim):
 
     def summarize(self):
         start, end = self.watch_seconds()
-        savior = (
-            f"savior @{format_time(self.savior_left_seconds())} left"
-            if self.savior_left_pct > 0 else "no savior"
-        )
+        savior = self.savior_summary_text()
         return (
-            f"🎯 Leader: {self.filter_text()}; from {format_time(start)} to {format_time(end)} in, when a side's bid "
+            f"Leader: {self.filter_text()}; from {format_time(start)} to {format_time(end)} in, when a side's bid "
             f"first reaches {self.leader_at_cents}¢, buy {self.contracts} of it at its ask (≤{self.leader_max_cents}¢), "
             f"held to the end ({savior}); no leader -> skip | capital ${self.capital:.2f} ({self.capital_source})"
         )

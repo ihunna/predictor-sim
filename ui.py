@@ -85,23 +85,23 @@ def _side_line(state, label):
         for o in state.side_orders(label):
             tag = {"hedge": " lock-in", "profit": " extra", "leader": " leader", "trail": " trailing"}.get(o.kind, "")
             if o.filled:
-                parts.append(f"✅ {o.contracts} @ {round(o.fill_price * 100)}¢{tag} at {format_time(o.fill_time_left)} "
+                parts.append(f"[filled] {o.contracts} @ {round(o.fill_price * 100)}¢{tag} at {format_time(o.fill_time_left)} "
                              f"left" + (" (taker)" if o.taker else ""))
             elif state.cancelled_time_left is not None:
-                parts.append(f"🛑 {o.contracts} @ {round(o.price * 100)}¢ cancelled at "
+                parts.append(f"[cancel] {o.contracts} @ {round(o.price * 100)}¢ cancelled at "
                              f"{format_time(state.cancelled_time_left)} left")
             else:
-                parts.append(f"⏳ {o.contracts} @ {round(o.price * 100)}¢{tag} not filled")
+                parts.append(f"[open] {o.contracts} @ {round(o.price * 100)}¢{tag} not filled")
         if state.stop_side == label:
             via = ("savior" if any(n.startswith("savior_sold_") for n in state.notes)
                    else "strand" if any(n.startswith("strand_sold_") for n in state.notes)
                    else "time" if any(n.startswith("time_sold_") for n in state.notes)
                    else "stop-loss")
-            parts.append(f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ ({via}) at "
+            parts.append(f"[sold] {state.stop_contracts} @ {round(state.stop_price * 100)}¢ ({via}) at "
                          f"{format_time(state.stop_time_left)} left")
         elif (getattr(state, "savior_cut_cents", None) is not None and state.stop_time_left is None
               and state.held(label) > 0):
-            parts.append(f"🛟 savior cut {state.savior_cut_cents}¢")
+            parts.append(f"savior cut {state.savior_cut_cents}¢")
         fill = " + ".join(parts) or "never placed"
     low_at = f" at {format_time(lowest_left)} left" if lowest_left is not None else ""
     return f"   {label:<5} {fill:<34} | low {format_lowest_cents(lowest)}{low_at}"
@@ -148,10 +148,10 @@ class PlainUI:
             self.pending_since = time.time()
 
     def window_started(self, state, title, slug, market_id, ptb, prev_move, skip_message):
-        self._emit(f"\n[{stamp()}] 🚀 {self.duration}m window started: {title} (slug {slug}, market {market_id})")
-        self._emit(f"📊 Price to Beat (Baseline): {format_dollar(ptb) if ptb > 0 else '--'}")
+        self._emit(f"\n[{stamp()}] START {self.duration}m window: {title} (slug {slug}, market {market_id})")
+        self._emit(f"PTB: {format_dollar(ptb) if ptb > 0 else '--'}")
         if skip_message:
-            self._emit(f"⏸️  {skip_message}")
+            self._emit(f"[skip] {skip_message}")
 
     def prev_move_known(self, state, prev_move, skip_message):
         prev_text = color_signed(prev_move, f"{prev_move:+.3f}%") if prev_move is not None else "unknown"
@@ -160,9 +160,9 @@ class PlainUI:
         elif state.trading:
             action = ("watching for a leader" if self.sim.strategy == "leader"
                       else f"placing both {self.sim.limit_cents}¢ limits")
-            self._emit(f"📈 Last window moved {prev_text}: {action}.")
+            self._emit(f"[move] Last window moved {prev_text}: {action}.")
         else:
-            self._emit(f"📈 Last window moved {prev_text}.")
+            self._emit(f"[move] Last window moved {prev_text}.")
 
     def tick(self, state, up_ask, down_ask, ptb, price, socket_info):
         with self.lock:
@@ -196,7 +196,7 @@ class PlainUI:
                   else "Predict.fun's resolution (official prices not pushed)")
         print_line(sep)
         print_line(
-            f"🏁 {self.duration}m {hhmm(state.window_start)} window ended: {_color_outcome(outcome)} | "
+            f"END {self.duration}m {hhmm(state.window_start)} window: {_color_outcome(outcome)} | "
             f"{format_dollar(start_price)} → {format_dollar(end_price)} {move}"
         )
         print_line(_side_line(state, "Up"))
@@ -208,12 +208,12 @@ class PlainUI:
 
     def confirmed(self, state, outcome, live_outcome, pnl, capital, source):
         if outcome not in ("Up", "Down", "Tie"):
-            head = f"⚠️ {hhmm(state.window_start)} no result from {source} (no official prices, not resolved yet)"
+            head = f"[!] {hhmm(state.window_start)} no result from {source} (no official prices, not resolved yet)"
         elif outcome == live_outcome:
-            head = f"✅ {hhmm(state.window_start)} confirmed by {source}: {_color_outcome(outcome)}"
+            head = f"[ok] {hhmm(state.window_start)} confirmed by {source}: {_color_outcome(outcome)}"
         else:
             head = (
-                f"⚠️ {hhmm(state.window_start)} result from {source} is {_color_outcome(outcome)}, "
+                f"[!] {hhmm(state.window_start)} result from {source} is {_color_outcome(outcome)}, "
                 f"first read said {_color_outcome(live_outcome)}"
             )
         result = f"pnl {_format_pnl(pnl)}" if state.trading else "not traded"
@@ -248,8 +248,10 @@ class Dashboard:
     def start(self):
         from rich.live import Live
 
+        # screen=True keeps the dashboard on the alternate buffer (not mixed with other TTY text).
+        # redirect off — WS status goes through ui.event so reconnect threads don't fight Live.
         self.live = Live(get_renderable=self.render, console=self.console, refresh_per_second=4,
-                         redirect_stdout=True, redirect_stderr=True, screen=True)
+                         redirect_stdout=False, redirect_stderr=False, screen=True)
         self.live.start()
 
     def stop(self):
@@ -331,6 +333,17 @@ class Dashboard:
     # rendering
 
     def render(self):
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.text import Text
+
+        try:
+            return self._render()
+        except Exception as e:
+            # Keep Live alive — a render blow-up otherwise freezes the last frame (often @ savior arm).
+            return Panel(Text(f"UI render error: {e}", style="bold red"), title="dashboard", border_style="red")
+
+    def _render(self):
         from rich import box
         from rich.console import Group
         from rich.panel import Panel
@@ -410,13 +423,13 @@ class Dashboard:
             if ptb and price:
                 move = price - ptb
                 style = "bold green" if move > 0 else "bold red" if move < 0 else "bold"
-                arrow = "▲" if move > 0 else "▼" if move < 0 else "•"
+                arrow = "up" if move > 0 else "down" if move < 0 else "flat"
                 price_line.append(f"   {arrow} {move:+.2f} ({move / ptb * 100:+.3f}%)", style=style)
             parts.append(price_line)
 
             if not state.trading:
                 parts.append(Text(""))
-                parts.append(Text(f"⏸  Not trading this window: {skip_text(state)}", style="bold yellow"))
+                parts.append(Text(f"[skip] Not trading this window: {skip_text(state)}", style="bold yellow"))
 
             def clock(time_left):
                 return datetime.fromtimestamp(state.window_end - time_left).strftime("%H:%M:%S")
@@ -440,42 +453,53 @@ class Dashboard:
             cards.add_column(ratio=1)
             cards.add_column(ratio=1)
             row = []
-            for label, arrow, ask, low, low_left, color in (
-                ("Up", "▲", up_ask, state.lowest_up, state.lowest_up_time_left, "green"),
-                ("Down", "▼", down_ask, state.lowest_down, state.lowest_down_time_left, "red"),
+            def cancel_clock(at):
+                return datetime.fromtimestamp(at).strftime("%H:%M:%S") if at else ""
+
+            for label, ask, low, low_left, color in (
+                ("Up", up_ask, state.lowest_up, state.lowest_up_time_left, "green"),
+                ("Down", down_ask, state.lowest_down, state.lowest_down_time_left, "red"),
             ):
                 order_lines = []
                 if not state.trading:
                     order_lines.append(Text("not trading", style="dim"))
                 elif state.decision_pending:
-                    order_lines.append(Text("checking last window…", style="dim"))
+                    order_lines.append(Text("checking last window...", style="dim"))
+                elif state.cancelled_time_left is not None and state.placed_time_left is not None:
+                    # Same as dual: show cancel as soon as it fires (all cancel-enabled strats).
+                    order_lines.append(Text(
+                        f"[cancel] cancelled at {clock(state.cancelled_time_left)} (nothing filled)",
+                        style="bold yellow"))
                 elif state.placed_time_left is None:
                     if state.mode == "leader":
                         watch_from, watch_to = sim.watch_seconds()
-                        order_lines.append(Text(f"waiting for a leader ({format_time(watch_from)}-"
-                                                f"{format_time(watch_to)} in)", style="dim"))
+                        waiting = Text(f"waiting for a leader ({format_time(watch_from)}-"
+                                       f"{format_time(watch_to)} in)", style="dim")
                     else:
-                        order_lines.append(Text("not placed yet", style="dim"))
+                        waiting = Text("not placed yet", style="dim")
+                    if cancel_at and sim.cancel_left_pct > 0:
+                        waiting.append(f"  (cancel {cancel_clock(cancel_at)})", style="dim")
+                    order_lines.append(waiting)
                 else:
                     for o in state.side_orders(label):
                         tag = {"hedge": " lock-in", "profit": " extra", "leader": " leader", "trail": " trailing"}.get(o.kind, "")
                         if o.filled:
                             order_lines.append(Text(
-                                f"✅ bought {o.contracts} @ {round(o.fill_price * 100)}¢{tag} at "
+                                f"[filled] bought {o.contracts} @ {round(o.fill_price * 100)}¢{tag} at "
                                 f"{clock(o.fill_time_left)}" + (" (instant)" if o.taker else ""),
                                 style="bold green"))
                         elif state.cancelled_time_left is not None:
                             order_lines.append(Text(
-                                f"🛑 cancelled at {clock(state.cancelled_time_left)} (nothing filled)",
+                                f"[cancel] cancelled at {clock(state.cancelled_time_left)} (nothing filled)",
                                 style="bold yellow"))
                         elif state.stop_time_left is not None:
-                            order_lines.append(Text(f"🛑 {o.contracts} @ {round(o.price * 100)}¢ cancelled (stop-loss)",
-                                                    style="dim"))
+                            order_lines.append(Text(
+                                f"[cancel] {o.contracts} @ {round(o.price * 100)}¢ cancelled (stop-loss)",
+                                style="dim"))
                         else:
-                            line = Text(f"⏳ buying {o.contracts} @ {round(o.price * 100)}¢{tag}", style="yellow")
+                            line = Text(f"[open] buying {o.contracts} @ {round(o.price * 100)}¢{tag}", style="yellow")
                             if cancel_at and state.fill_type == "none":
-                                line.append(f"  (cancel {datetime.fromtimestamp(cancel_at).strftime('%H:%M:%S')})",
-                                            style="dim")
+                                line.append(f"  (cancel {cancel_clock(cancel_at)})", style="dim")
                             order_lines.append(line)
                 if state.stop_side == label:
                     via = ("savior" if any(n.startswith("savior_sold_") for n in state.notes)
@@ -483,14 +507,14 @@ class Dashboard:
                            else "time" if any(n.startswith("time_sold_") for n in state.notes)
                            else "stop")
                     order_lines.append(Text(
-                        f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ ({via}) at "
+                        f"[sold] {state.stop_contracts} @ {round(state.stop_price * 100)}¢ ({via}) at "
                         f"{clock(state.stop_time_left)}", style="bold red"))
                 elif (getattr(state, "savior_cut_cents", None) is not None
                       and state.stop_time_left is None and state.held(label) > 0
-                      and (state.fills_type == f"only_{label.lower()}"
+                      and (state.fill_type == f"only_{label.lower()}"
                            or getattr(state, "bet_side", None) == label)):
                     order_lines.append(Text(
-                        f"🛟 savior cut {state.savior_cut_cents}¢"
+                        f"savior cut {state.savior_cut_cents}¢"
                         + (f" (arm {datetime.fromtimestamp(savior_at).strftime('%H:%M:%S')})"
                            if savior_at else ""),
                         style="bold yellow"))
@@ -512,7 +536,7 @@ class Dashboard:
                 filled = state.trading and filled_left is not None
                 row.append(Panel(
                     body,
-                    title=f"[bold {color}]{arrow} {label.upper()}[/]",
+                    title=f"[bold {color}]{label.upper()}[/]",
                     title_align="left",
                     border_style=f"bold {color}" if filled else color if state.trading else "dim",
                     box=box.HEAVY if filled else box.ROUNDED,
@@ -524,7 +548,7 @@ class Dashboard:
             if state.trading and state.fill_type != "none":
                 _, if_up = sim.compute_result(state, "Up", state.maker_fee_bps, state.taker_fee_bps)
                 _, if_down = sim.compute_result(state, "Down", state.maker_fee_bps, state.taker_fee_bps)
-                summary = Text("→ ", style="bold")
+                summary = Text("-> ", style="bold")
                 summary.append(f"Holding Up {state.held('Up')} · Down {state.held('Down')}: ", style="bold")
                 if abs(if_up - if_down) < 0.005:
                     summary.append(f"{if_up:+.2f}", style="bold green" if if_up >= 0 else "bold red")
@@ -542,7 +566,7 @@ class Dashboard:
         connected = socket_info.get("connected")
         age = socket_info.get("book_age")
         footer = Text()
-        footer.append("● ", style="green" if connected else "red")
+        footer.append("* ", style="green" if connected else "red")
         footer.append("connected" if connected else "disconnected", style="dim")
         footer.append(f"   book {age:.1f}s old" if age is not None else "   no book yet", style="dim")
         footer.append("   next market ready" if socket_info.get("next_ready") else "", style="dim")
@@ -613,8 +637,8 @@ class Dashboard:
             need = getattr(sim, "require_structure", "") or "any"
             cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
                       if sim.cancel_left_pct > 0 else "no cancel")
-            savior = (f"savior @{format_time(sim.savior_left_seconds())} left"
-                      if getattr(sim, "savior_left_pct", 0) > 0 else "no savior")
+            savior = (sim.savior_summary_text() if hasattr(sim, "savior_summary_text")
+                      else "no savior")
             skip = f"both @{sim.limit_cents}¢ when structure={need} · {cancel} · {savior}"
             skip += _struct_rsi_now()
             if state is not None and state.action:
@@ -628,8 +652,8 @@ class Dashboard:
                       if getattr(sim, "exit_left_seconds", 0) > 0 else "no time exit")
             cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
                       if sim.cancel_left_pct > 0 else "no cancel")
-            savior = (f"savior @{format_time(sim.savior_left_seconds())} left"
-                      if getattr(sim, "savior_left_pct", 0) > 0 else "no savior")
+            savior = (sim.savior_summary_text() if hasattr(sim, "savior_summary_text")
+                      else "no savior")
             skip = (f"buy ≤{sim.entry_cents}¢ when structure={need} · {tp} · {time_x} · {stop} · "
                     f"{cancel} · {savior}")
             skip += _struct_rsi_now()
@@ -639,7 +663,8 @@ class Dashboard:
             skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
             skip += _struct_rsi_now()
         if getattr(sim, "savior_left_pct", 0) > 0 and sim.strategy in ("against", "leader", "combo", "fav", "regime"):
-            skip += f" · savior @{format_time(sim.savior_left_seconds())} left"
+            skip += (f" · {sim.savior_summary_text()}" if hasattr(sim, "savior_summary_text")
+                     else "")
         if sim.strategy == "leader":
             prices = "at ask"
         elif sim.strategy == "scalp":
@@ -734,7 +759,7 @@ class Dashboard:
         sides = Table.grid(padding=(0, BOOK_GAP))
         sides.add_column(width=width)
         sides.add_column(width=width)
-        sides.add_row(side_lines("▲ Up", "green", levels["up"]), side_lines("▼ Down", "red", levels["down"]))
+        sides.add_row(side_lines("Up", "green", levels["up"]), side_lines("Down", "red", levels["down"]))
         return Panel(Group(header, sides), title="[bold]Order book[/bold]", border_style="cyan", padding=(0, 1))
 
     def render_history(self, history):
@@ -763,11 +788,11 @@ class Dashboard:
                 pnl_text = Text("")
             status = row["status"]
             if status == "confirmed":
-                mark = Text("✅")
+                mark = Text("[ok]")
             elif status in ("settling", "official", "live"):
-                mark = Text("⏳")
+                mark = Text("[...]")
             else:
-                mark = Text("⚠️", style="bold yellow")
+                mark = Text("[!]", style="bold yellow")
             hist.add_row(hhmm(row["window_start"]), Text(outcome, style=outcome_style), bought, pnl_text, mark)
 
         traded = [r for r in history if r["trading"] and r["pnl"] is not None

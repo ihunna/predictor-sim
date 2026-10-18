@@ -57,7 +57,7 @@ class AgainstSim(ComboSim):
                     f"(up>{self.rsi_agree_up:g} / down<{self.rsi_agree_down:g})")
             skip = "trending-side streak / mixed / unknown / RSI mid or disagree"
         return (
-            f"🎯 Against [{self.against_filter}]: at exactly {self.against_min_streak} same winners in a row "
+            f"Against [{self.against_filter}]: at exactly {self.against_min_streak} same winners in a row "
             f"{gate}{vs_avg}, buy {self.contracts} of the other side (≤{self.against_max_cents}¢); "
             f"{skip} → skip; a streak that keeps going is not bet again until it breaks; "
             f"{self._take_profit_text()}; {self._savior_text()} | {capital}"
@@ -69,9 +69,7 @@ class AgainstSim(ComboSim):
         return f"take-profit: sell all at {self.take_profit_cents}¢, else held to the end"
 
     def _savior_text(self):
-        if self.savior_left_pct <= 0:
-            return "no savior"
-        return f"savior @{format_time(self.savior_left_seconds())} left"
+        return self.savior_summary_text()
 
     def regime_decision(self, window_start, prev_outcome=None, prev_move_pct=None):
         """("against" | "skip", reason), and sets the side and the take-profit on the current state."""

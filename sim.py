@@ -429,6 +429,9 @@ class WindowState:
     savior_cut_cents: int | None = None
     savior_reason: str = ""
     savior_entry_cents: int | None = None
+    # Best bid since arm + remaining when it last improved (stall = no new high for a while).
+    savior_best_bid: float = 0.0
+    savior_progress_remaining: float | None = None
 
     def record_book(self, depth, up_ask, down_ask):
         """One order-book sample per tick, for the window's average depth and spread."""
@@ -520,7 +523,7 @@ class BaseSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.0, cancel_left_pct=67.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14,
-                 savior_left_pct=50.0):
+                 savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
@@ -532,6 +535,10 @@ class BaseSim:
         self.hedge = hedge_cents / 100.0
         # 0 = off; default 50% of window left (30:00 on 60m, 7:30 on 15m, 2:30 on 5m)
         self.savior_left_pct = max(0.0, float(savior_left_pct))
+        # Loss-cut deadline: default 20% left (12:00 / 3:00 / 1:00). Profit cuts still fire on hit.
+        self.savior_force_left_pct = max(0.0, float(savior_force_left_pct))
+        # No new high bid for this % of window → stall sell (default 10%: 30s / 1:30 / 6:00).
+        self.savior_stall_pct = max(0.0, float(savior_stall_pct))
         self.coin = coin
         self.duration = duration
         self.limit = limit_cents / 100.0
@@ -594,7 +601,7 @@ class BaseSim:
             if self.max_prev_move_pct > 0 else "no filters"
         )
         return (
-            f"🎯 Dual: {self.limit_cents}¢ limit on Up and Down, {self.contracts} contracts each, placed {when}, "
+            f"Dual: {self.limit_cents}¢ limit on Up and Down, {self.contracts} contracts each, placed {when}, "
             f"{self.dual_rules_text()}, {skip} | capital ${self.capital:.2f} ({self.capital_source})"
         )
 
@@ -605,7 +612,9 @@ class BaseSim:
             if self.cancel_left_pct > 0 else "never cancel"
         )
         savior = (
-            f"savior one-side @{format_time(self.savior_left_seconds())} left"
+            f"savior one-side arm @{format_time(self.savior_left_seconds())} left"
+            f"/stall {format_time(self.savior_stall_seconds())}"
+            f"/force @{format_time(self.savior_force_left_seconds())} left"
             if self.savior_left_pct > 0 else "no savior"
         )
         hedge = (
@@ -635,6 +644,33 @@ class BaseSim:
         if self.savior_left_pct <= 0:
             return 0.0
         return self.duration * 60 * self.savior_left_pct / 100.0
+
+    def savior_force_left_seconds(self):
+        """Time left when an adverse (loss) cut is forced. Always < arm; 0 if savior off."""
+        if self.savior_left_pct <= 0:
+            return 0.0
+        arm = self.savior_left_seconds()
+        if self.savior_force_left_pct <= 0:
+            return 0.0
+        force = self.duration * 60 * self.savior_force_left_pct / 100.0
+        # Force must be later than arm (strictly less time left).
+        return min(force, max(0.0, arm - 1.0))
+
+    def savior_stall_seconds(self):
+        """Seconds of no new high bid after arm before stall sell. 0 if savior/stall off."""
+        if self.savior_left_pct <= 0 or self.savior_stall_pct <= 0:
+            return 0.0
+        return self.duration * 60 * self.savior_stall_pct / 100.0
+
+    def savior_summary_text(self):
+        """Short arm/stall/force line for strategy banners and the live UI."""
+        if self.savior_left_pct <= 0:
+            return "no savior"
+        return (
+            f"savior arm @{format_time(self.savior_left_seconds())}/"
+            f"stall {format_time(self.savior_stall_seconds())}/"
+            f"force @{format_time(self.savior_force_left_seconds())} left"
+        )
 
     @staticmethod
     def _bid_for(side, up_ask, down_ask):
@@ -680,7 +716,7 @@ class BaseSim:
         move = state.btc_move_pct
         abs_move = abs(move) if move is not None else 0.0
         conf = 0.0
-        if winner_low_cents >= 40:
+        if winner_low_cents >= 50:
             conf += 0.4
         conf += min(0.6, (abs_move / 0.20) * 0.6 if abs_move > 0 else 0.0)
         conf = min(1.0, conf)
@@ -703,8 +739,20 @@ class BaseSim:
         )
         state.notes.append(f"savior_locked_{state.savior_reason}")
 
+    def _track_savior_progress(self, state, bid, remaining):
+        """New high bid since arm = moving toward profit; resets the stall clock."""
+        if state.savior_progress_remaining is None:
+            state.savior_best_bid = bid
+            state.savior_progress_remaining = remaining
+            return
+        if bid > state.savior_best_bid + 1e-9:
+            state.savior_best_bid = bid
+            state.savior_progress_remaining = remaining
+
     def _maybe_savior_exit(self, state, remaining, up_ask, down_ask):
-        """After arm_left, lock cut once from winner strength; flatten when bid reaches locked cut."""
+        """Arm → lock cut once. Profit cut: sell when bid ≥ cut (ok immediately).
+        Otherwise keep watching: stall sell if bid makes no new high for stall_seconds
+        (duration-scaled room); force flatten at force_left. No instant recover-at-entry."""
         if self.savior_left_pct <= 0 or state.tp_side or state.stop_time_left is not None:
             return
         side = self._one_side_held(state)
@@ -721,16 +769,32 @@ class BaseSim:
             self._lock_savior_cut(state, side, up_ask, down_ask)
             if state.savior_cut_cents is None:
                 return
+        self._track_savior_progress(state, bid, remaining)
         cut = state.savior_cut_cents / 100.0
         entry = (state.savior_entry_cents or int(round(state.avg_price(side) * 100))) / 100.0
-        # Profit cut: wait until bid >= cut. Loss cut (cut < entry): flatten on any valid bid.
-        if cut + 1e-9 >= entry and bid + 1e-9 < cut:
-            return
+        force = self.savior_force_left_seconds()
+        stall = self.savior_stall_seconds()
+        profit_cut = cut + 1e-9 >= entry
+
+        if profit_cut and bid + 1e-9 >= cut:
+            how = "profit"
+        else:
+            stalled = False
+            if stall > 0 and state.savior_progress_remaining is not None:
+                no_progress = state.savior_progress_remaining - remaining
+                stalled = no_progress + 1e-9 >= stall
+            if stalled:
+                how = "stall"
+            elif force > 0 and remaining <= force:
+                how = "force"
+            else:
+                return
+
         state.stop_side, state.stop_contracts, state.stop_price = side, held, bid
         state.stop_time_left = remaining
         state.notes.append(
             f"savior_sold_{side.lower()}_{held}@{round(bid * 100)}_"
-            f"{state.savior_reason}_at_{format_time(remaining)}_left"
+            f"{how}_{state.savior_reason}_at_{format_time(remaining)}_left"
         )
 
     def _position_exits(self, state, now, remaining, up_ask, down_ask):
@@ -1188,8 +1252,8 @@ class BaseSim:
         return "waiting to place"
 
     def orders_text(self, state):
-        up = "✅" if state.up_fill_time_left is not None else "⏳"
-        down = "✅" if state.down_fill_time_left is not None else "⏳"
+        up = "[filled]" if state.up_fill_time_left is not None else "[open]"
+        down = "[filled]" if state.down_fill_time_left is not None else "[open]"
         return f"Up{up} Down{down}"
 
     def display_status(self):

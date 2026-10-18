@@ -41,23 +41,23 @@ class ComboSim(BaseSim):
         capital = f"capital ${self.capital:.2f} ({self.capital_source})"
         if self.strategy == "combo":
             return (
-                f"🎯 Streaks: after {self.against_min_streak}+ same winners in a row, when the last window moved "
+                f"Streaks: after {self.against_min_streak}+ same winners in a row, when the last window moved "
                 f"{self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
                 f"(≤{self.against_max_cents}¢){self._continue_text()}; held to the end; else skip | {capital}"
             )
         if self.strategy == "against":
             return (
-                f"🎯 Against the streak: after {self.against_min_streak}+ same winners in a row, when the last window "
+                f"Against the streak: after {self.against_min_streak}+ same winners in a row, when the last window "
                 f"moved {self.against_min_move_pct:.2f}%+, buy {self.contracts} of the other side "
                 f"(≤{self.against_max_cents}¢, held to the end); else skip | {capital}"
             )
         if self.strategy == "fav":
             return (
-                f"🎯 Favourite only: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
+                f"Favourite only: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
                 f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}, held to the end); else skip | {capital}"
             )
         return (
-            f"🎯 Regime: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
+            f"Regime: after exactly 2 same winners in a row buy {self.contracts} of the favourite "
             f"(≤{self.fav_max_cents}¢{self._fav_skip_text()}, held to the end); else a {self.limit_cents}¢ dual × "
             f"{self.contracts} if one of the last {self.dual_lookback} windows was a dual; else skip | dual windows: "
             f"{self.dual_rules_text()} | {capital}"

@@ -142,16 +142,16 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     sim.resolve_decision(state, reason)
     message = None
     if reason and prev_move is None:
-        message = "⏸️ Last window's move is unknown (no official prices seen): logging this window without trading."
+        message = "[skip] Last window's move is unknown (no official prices seen): logging this window without trading."
     elif reason and sim.strategy == "leader":
-        message = (f"⏸️ Last window moved {prev_move:+.3f}% (needs {sim.min_prev_move_pct:.2f}%+): "
+        message = (f"[skip] Last window moved {prev_move:+.3f}% (needs {sim.min_prev_move_pct:.2f}%+): "
                    f"logging this window without trading.")
     elif reason:
-        message = (f"⏸️ Last window moved {prev_move:+.3f}% (limit {sim.max_prev_move_pct:.2f}%): "
+        message = (f"[skip] Last window moved {prev_move:+.3f}% (limit {sim.max_prev_move_pct:.2f}%): "
                    f"logging this window without trading.")
     elif sim.strategy == "leader":
         start, end = sim.watch_seconds()
-        message = (f"👀 Last window moved {prev_move:+.3f}%: watching {format_time(start)}-{format_time(end)} in "
+        message = (f"[watch] Last window moved {prev_move:+.3f}%: watching {format_time(start)}-{format_time(end)} in "
                    f"for a side to reach {sim.leader_at_cents}¢, then buying it at its ask (≤{sim.leader_max_cents}¢).")
     ui.prev_move_known(state, prev_move, message)
 
@@ -178,9 +178,9 @@ def decide_dual(ui, sim, state, prev_move):
     reason, streak = _structure_gate_reason(sim, state, prev_move)
     sim.resolve_decision(state, reason)
     if reason:
-        message = f"⏸️ Skipping dual ({reason}; {streak}): logging this window without trading."
+        message = f"[skip] Skipping dual ({reason}; {streak}): logging this window without trading."
     else:
-        message = (f"🎯 Dual window ({streak}): placing both {sim.limit_cents}¢ ×{sim.contracts} limits.")
+        message = (f"Dual window ({streak}): placing both {sim.limit_cents}¢ x{sim.contracts} limits.")
     ui.prev_move_known(state, prev_move, message)
 
 
@@ -190,9 +190,9 @@ def decide_scalp(ui, sim, state, prev_move):
     sim.resolve_decision(state, reason)
     tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
     if reason:
-        message = f"⏸️ Skipping scalp ({reason}; {streak}): logging this window without trading."
+        message = f"[skip] Skipping scalp ({reason}; {streak}): logging this window without trading."
     else:
-        message = (f"🎯 Scalp window ({streak}): buy ask≤{sim.entry_cents}¢ ×{sim.contracts}, {tp}.")
+        message = (f"Scalp window ({streak}): buy ask≤{sim.entry_cents}¢ x{sim.contracts}, {tp}.")
     ui.prev_move_known(state, prev_move, message)
 
 
@@ -221,18 +221,18 @@ def decide_regime(ui, sim, state, prev_move):
     if action == "against":
         held = (f"sold at {round(state.take_profit * 100)}¢ (take-profit) or held to the end" if state.take_profit
                 else "held to the end")
-        message = (f"🎯 Against-the-streak window ({streak}): buying {sim.contracts} {state.bet_side} at its ask "
+        message = (f"Against-the-streak window ({streak}): buying {sim.contracts} {state.bet_side} at its ask "
                    f"if ≤{sim.against_max_cents}¢, {held}.")
     elif action == "continue":
-        message = (f"🎯 Streak-continues window ({streak}, slowing): buying {sim.contracts} {state.bet_side} at its "
+        message = (f"Streak-continues window ({streak}, slowing): buying {sim.contracts} {state.bet_side} at its "
                    f"ask if ≤{sim.against_max_cents}¢, held to the end.")
     elif action == "fav":
-        message = (f"🎯 Favourite window ({streak}): buying {sim.contracts} of the higher-priced side at its ask "
+        message = (f"Favourite window ({streak}): buying {sim.contracts} of the higher-priced side at its ask "
                    f"if ≤{sim.fav_max_cents}¢, held to the end.")
     elif action == "dual":
-        message = f"🎯 Dual window ({streak}): placing both {sim.limit_cents}¢ limits."
+        message = f"Dual window ({streak}): placing both {sim.limit_cents}¢ limits."
     else:
-        message = f"⏸️ Skipping ({reason}; {streak}): logging this window without trading."
+        message = f"[skip] Skipping ({reason}; {streak}): logging this window without trading."
     ui.prev_move_known(state, prev_move, message)
 
 
@@ -277,7 +277,7 @@ def settle_window(ui, ws, sim, state, feed_id, duration, updown_file, price_to_b
                 info = fetch_market(state.market_id)
                 if info and info["resolved"]:
                     if info["resolution"] != logged_outcome:
-                        ui.event(f"⚠️ {hhmm(state.window_start)} window resolved {info['resolution']} on Predict.fun, "
+                        ui.event(f"[!] {hhmm(state.window_start)} window resolved {info['resolution']} on Predict.fun, "
                                  f"logged as {logged_outcome} from {logged_source}")
                     return
 
@@ -315,7 +315,7 @@ def settle_window(ui, ws, sim, state, feed_id, duration, updown_file, price_to_b
         pnl, capital = write_logs(outcome, start, end, notes, info)
         ui.confirmed(state, outcome, outcome, pnl, capital, "Predict.fun")
     except Exception as e:
-        ui.event(f"⚠️ Settling window {state.window_start} failed: {e}")
+        ui.event(f"[!] Settling window {state.window_start} failed: {e}")
 
 
 def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat):
@@ -325,7 +325,7 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
 
     market_id, category_id, title = get_market_metadata_for_slug(slug)
     if not market_id:
-        ui.event(f"⚠️ [{stamp()}] No Predict.fun market for {slug} yet. Retrying in 2 seconds...")
+        ui.event(f"[!] [{stamp()}] No Predict.fun market for {slug} yet. Retrying in 2 seconds...")
         time.sleep(2)
         return price_to_beat
 
@@ -343,13 +343,14 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
         skip_message = None
     ui.window_started(state, title, slug, market_id, price_to_beat, None, skip_message)
     if state.reload:
-        ui.event(f"💰 Balance too low for both orders: reloaded +${state.reload:.2f} to ${sim.capital:.2f} "
+        ui.event(f"[reload] Balance too low for both orders: reloaded +${state.reload:.2f} to ${sim.capital:.2f} "
                  f"(${sim.reloaded_total:.2f} reloaded in total)")
     threading.Thread(target=decide_window, args=(ui, ws, sim, state, coin, duration, feed_id), daemon=True).start()
     next_prepared = False
     early_volume_asked = False
     last_volume_poll = 0.0
     preopen_sampled = False
+    saw_cancel = state.cancelled_time_left is not None
 
     while True:
         now = time.time()
@@ -382,6 +383,13 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
         ptb = ws.official_prices(market_id)[0] or ws.first_price_from(window_start) or price_to_beat
         btc = ws.latest_price()
         sim.on_tick(now, up_ask, down_ask, btc or 0.0, ptb or 0.0)
+        # Announce cancel as soon as it fires (all strats that use cancel_left_pct).
+        if not saw_cancel and state.cancelled_time_left is not None:
+            saw_cancel = True
+            ui.event(
+                f"[cancel] {hhmm(state.window_start)} cancelled no-fill at "
+                f"{format_time(state.cancelled_time_left)} left"
+            )
         if state.depth_start is None and up_ask > 0 and down_ask > 0:
             state.depth_start = ws.depth(market_id)
         if state.depth_first_fill is None and state.fill_type != "none":
@@ -536,9 +544,17 @@ def parse_args():
                              "~40:00 of 60m; 0 = never). From 60m scalp replay: late fills rarely hit TP.")
     parser.add_argument("--savior-left-pct", type=float, default=50.0,
                         help="On one-sided holds, arm savior when this much of the window is left (default 50: "
-                             "~2:30 of 5m, ~7:30 of 15m, ~30:00 of 60m). After cancel@67%% no-fill; only "
-                             "manages one-sided holds. Locks a cut once from winner strength "
-                             "(BTC Δ + winner cheapest ask); flatten when bid reaches it. 0 = off. All strategies.")
+                             "~2:30 of 5m, ~7:30 of 15m, ~30:00 of 60m). Locks a cut once from winner strength. "
+                             "Profit cut: sell when bid ≥ cut. Otherwise watch for progress (new high bid); "
+                             "stall-sell after --savior-stall-pct with no progress, or force at "
+                             "--savior-force-left-pct. 0 = off. All strategies.")
+    parser.add_argument("--savior-stall-pct", type=float, default=10.0,
+                        help="After arm, seconds of no new high bid before stall-sell, as %% of window "
+                             "(default 10: ~0:30 of 5m, ~1:30 of 15m, ~6:00 of 60m). Gives room instead of "
+                             "instant recover-at-entry. 0 = never stall (force only). Ignored if savior off.")
+    parser.add_argument("--savior-force-left-pct", type=float, default=20.0,
+                        help="Force flatten when this much of the window is left if still holding "
+                             "(default 20: ~1:00 of 5m, ~3:00 of 15m, ~12:00 of 60m). Ignored if savior off.")
     parser.add_argument("--capital", type=float, default=100.0,
                         help="Starting balance when there is no trades log yet (default 100).")
     parser.add_argument("--reload-to", type=float, default=None, metavar="DOLLARS",
@@ -624,6 +640,12 @@ def main():
         raise SystemExit("--cancel-left-pct must be between 0 and 100")
     if not 0 <= args.savior_left_pct < 100:
         raise SystemExit("--savior-left-pct must be between 0 and 100")
+    if not 0 <= args.savior_force_left_pct < 100:
+        raise SystemExit("--savior-force-left-pct must be between 0 and 100")
+    if not 0 <= args.savior_stall_pct < 100:
+        raise SystemExit("--savior-stall-pct must be between 0 and 100")
+    if args.savior_left_pct > 0 and args.savior_force_left_pct >= args.savior_left_pct:
+        raise SystemExit("--savior-force-left-pct must be below --savior-left-pct (force is later than arm)")
 
     updown_file = f"{coin}-{duration}-updown.csv"
     dual_trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
@@ -652,7 +674,8 @@ def main():
 
     sim_args = (coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source)
     common = dict(max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct,
-                  savior_left_pct=args.savior_left_pct,
+                  savior_left_pct=args.savior_left_pct, savior_force_left_pct=args.savior_force_left_pct,
+                  savior_stall_pct=args.savior_stall_pct,
                   hedge_cents=args.hedge_at, stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,
                   stop_loss_min_cents=args.stop_loss_min,
                   reload_to=args.capital if args.reload_to is None else args.reload_to,
@@ -696,11 +719,11 @@ def main():
         if trades_file != dual_trades_file:
             sim.load_history(dual_trades_file)
         sim.load_history(trades_file)
-    print(f"⚙️  Predict.fun {strategy} | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
+    print(f"[cfg] Predict.fun {strategy} | coin={coin} | duration={duration}m | Chainlink feed {feed_id}")
     print(sim.summarize())
-    print(f"📁 updown={updown_file} | trades={trades_file}")
+    print(f"[files] updown={updown_file} | trades={trades_file}")
 
-    print("🔌 Initializing Predict.fun socket...")
+    print("[ws] Initializing Predict.fun socket...")
     ws = PredictWS(feed_id)
 
     while True:
@@ -715,10 +738,12 @@ def main():
             current_ptb = float(val)
             break
         except ValueError:
-            print("❌ Invalid number format. Please enter a valid decimal price (e.g. 82741.02).")
+            print("[err] Invalid number format. Please enter a valid decimal price (e.g. 82741.02).")
 
     ui = PlainUI(sim, coin, duration) if args.plain else Dashboard(sim, coin, duration)
     ui.start()
+    # WS reconnect threads must not write the TTY — Rich Live redirects stdout/stderr and freezes if they do.
+    ws.set_status_handler(ui.event)
     try:
         while True:
             try:
@@ -727,6 +752,7 @@ def main():
                 ui.event(f"Error in loop execution: {e}. Restarting cycle...")
                 time.sleep(2)
     finally:
+        ws.set_status_handler(None)
         ui.stop()
 
 
@@ -734,4 +760,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n👋 Stopped.")
+        print("\nStopped.")

@@ -177,13 +177,15 @@ def test_quiet_dual_waits_for_enter_after(tmp):
 
 
 def scalp_sim(tmp, entry=30, target=60, exit_left=0, stop=0, confirm=5, require_structure="",
-              cancel_left_pct=0.0, savior_left_pct=0.0, duration=5):
+              cancel_left_pct=0.0, savior_left_pct=0.0, savior_force_left_pct=20.0,
+              savior_stall_pct=10.0, duration=5):
     """Structure gate / cancel / savior off by default so fill/TP tests stay place-on-cheap."""
     return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm,
                     require_structure=require_structure, cancel_left_pct=cancel_left_pct,
-                    savior_left_pct=savior_left_pct)
+                    savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
+                    savior_stall_pct=savior_stall_pct)
 
 
 def test_scalp_hold_to_settle(tmp):
@@ -288,19 +290,20 @@ def test_scalp_only_when_mixed(tmp):
 
 
 def test_savior_scales_with_duration(tmp):
-    """Default 50% left → 2:30 / 7:30 / 30:00 on 5m / 15m / 60m."""
-    s5 = scalp_sim(tmp, savior_left_pct=50.0, duration=5)
-    s15 = scalp_sim(tmp, savior_left_pct=50.0, duration=15)
-    s60 = scalp_sim(tmp, savior_left_pct=50.0, duration=60)
-    assert s5.savior_left_seconds() == 150
-    assert s15.savior_left_seconds() == 450
-    assert s60.savior_left_seconds() == 1800
+    """Default 50% arm / 10% stall / 20% force → 2:30+0:30+1:00 / 7:30+1:30+3:00 / 30:00+6:00+12:00."""
+    s5 = scalp_sim(tmp, savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0, duration=5)
+    s15 = scalp_sim(tmp, savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0, duration=15)
+    s60 = scalp_sim(tmp, savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0, duration=60)
+    assert s5.savior_left_seconds() == 150 and s5.savior_stall_seconds() == 30 and s5.savior_force_left_seconds() == 60
+    assert s15.savior_left_seconds() == 450 and s15.savior_stall_seconds() == 90 and s15.savior_force_left_seconds() == 180
+    assert s60.savior_left_seconds() == 1800 and s60.savior_stall_seconds() == 360 and s60.savior_force_left_seconds() == 720
     assert scalp_sim(tmp, savior_left_pct=0.0).savior_left_seconds() == 0.0
+    assert scalp_sim(tmp, savior_left_pct=50.0, savior_stall_pct=0.0).savior_stall_seconds() == 0.0
 
 
 def test_savior_favorable_locks_and_exits(tmp):
-    """Winning our side → favorable cut; flatten when bid reaches locked cut."""
-    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0)
+    """Winning our side → favorable cut; flatten when bid reaches locked cut (ok immediately)."""
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0, savior_force_left_pct=10.0, savior_stall_pct=10.0)
     # Fill Up @20¢; BTC +0.2% → winner Up; arm at 70s left with up bid 40¢ ≥ cut ~34¢
     state = run_window(sim, [
         (0, 0.50, 0.51),
@@ -311,22 +314,77 @@ def test_savior_favorable_locks_and_exits(tmp):
     assert state.savior_cut_cents is not None and state.savior_cut_cents > 20
     assert state.stop_side == "Up" and state.stop_time_left == 70
     assert any("savior_sold_up" in n for n in state.notes)
-    assert any("favorable" in n for n in state.notes)
+    assert any("profit_" in n and "favorable" in n for n in state.notes)
 
 
-def test_savior_adverse_cuts_below_entry(tmp):
-    """Losing side vs BTC → adverse cut ≤ entry; flatten on any bid once armed."""
-    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0)
-    state = run_window(sim, [
-        (0, 0.50, 0.51),
-        (20, 0.20, 0.81),
-        (100, 0.45, 0.56),
-        (230, 0.55, 0.70),  # up bid 30¢; BTC down → adverse
-    ], btc=PTB * 0.998, ptb=PTB)
+def test_savior_adverse_waits_until_force(tmp):
+    """Adverse lock does not sell at arm; force-flatten at force_left when stall is off."""
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0, savior_force_left_pct=20.0, savior_stall_pct=0.0)
+    # arm @75s left, force @60s left; up bid = 1 - down_ask
+    sim.start_window(START, END, f"btc-updown-5m-{START}", "1", now=START)
+    sim.on_tick(START + 20, 0.20, 0.81, btc=PTB * 0.998, ptb=PTB)  # fill @20
+    # 70s left: arm+lock, bid 15¢ < entry → watch (no sell)
+    sim.on_tick(START + 230, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)
+    state = sim.current
     assert state.savior_cut_cents is not None and state.savior_cut_cents <= 20
-    assert state.stop_side == "Up"
+    assert state.stop_time_left is None
     assert any("adverse" in n for n in state.notes)
-    assert any("savior_sold_up" in n for n in state.notes)
+    sim.on_tick(START + 245, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)  # 55s left ≤ force
+    state = sim.finish_window()
+    assert state.stop_side == "Up" and state.stop_time_left == 55
+    assert any("force_" in n and "savior_sold_up" in n for n in state.notes)
+
+
+def test_savior_adverse_room_no_instant_recover(tmp):
+    """Adverse: bid back to entry does NOT sell immediately — needs room (stall)."""
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0, savior_force_left_pct=5.0, savior_stall_pct=10.0)
+    # stall = 30s on 5m
+    sim.start_window(START, END, f"btc-updown-5m-{START}", "1", now=START)
+    sim.on_tick(START + 20, 0.20, 0.81, btc=PTB * 0.998, ptb=PTB)  # fill @20
+    sim.on_tick(START + 230, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)  # arm adverse, bid 15
+    assert sim.current.savior_cut_cents <= 20 and sim.current.stop_time_left is None
+    # bid back to entry 20¢ — room, not an instant recover sell
+    sim.on_tick(START + 240, 0.55, 0.80, btc=PTB * 0.998, ptb=PTB)  # 60s left, progress
+    assert sim.current.stop_time_left is None
+    assert not any("recover_" in n for n in sim.current.notes)
+
+
+def test_savior_stall_sells_without_progress(tmp):
+    """After arm, flat bid for stall_seconds → stall sell (duration-scaled room used up)."""
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0, savior_force_left_pct=5.0, savior_stall_pct=10.0)
+    # arm @75s, stall 30s, force @15s
+    sim.start_window(START, END, f"btc-updown-5m-{START}", "1", now=START)
+    sim.on_tick(START + 20, 0.20, 0.81, btc=PTB * 0.998, ptb=PTB)
+    sim.on_tick(START + 230, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)  # arm @70s, bid 15
+    assert sim.current.stop_time_left is None
+    # 25s later still flat → stall (70-45=25 < 30, still watching)
+    sim.on_tick(START + 255, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)  # 45s left
+    assert sim.current.stop_time_left is None
+    # 31s after arm with no new high → stall sell
+    sim.on_tick(START + 261, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)  # 39s left; 70-39=31 ≥ 30
+    state = sim.finish_window()
+    assert state.stop_side == "Up" and any("stall_" in n and "savior_sold_up" in n for n in state.notes)
+
+
+def test_savior_progress_resets_stall(tmp):
+    """New high bid after arm resets the stall clock — keep monitoring while climbing."""
+    # force very late (1% = 3s) so stall can fire first
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0, savior_force_left_pct=1.0, savior_stall_pct=10.0)
+    sim.start_window(START, END, f"btc-updown-5m-{START}", "1", now=START)
+    sim.on_tick(START + 20, 0.20, 0.81, btc=PTB * 0.998, ptb=PTB)
+    sim.on_tick(START + 230, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)  # arm bid 15 @70s
+    # Almost stall, then a new high → clock resets
+    sim.on_tick(START + 258, 0.55, 0.85, btc=PTB * 0.998, ptb=PTB)  # 42s left; 28s no progress
+    assert sim.current.stop_time_left is None
+    sim.on_tick(START + 260, 0.55, 0.82, btc=PTB * 0.998, ptb=PTB)  # bid 18 new high @40s left
+    assert sim.current.stop_time_left is None
+    # Another 28s flat from the new high — still under stall
+    sim.on_tick(START + 288, 0.55, 0.82, btc=PTB * 0.998, ptb=PTB)  # 12s left; 40-12=28 < 30
+    assert sim.current.stop_time_left is None
+    # Stall from last progress (still above force @3s)
+    sim.on_tick(START + 291, 0.55, 0.82, btc=PTB * 0.998, ptb=PTB)  # 9s left; 40-9=31 ≥ 30
+    state = sim.finish_window()
+    assert state.stop_side == "Up" and any("stall_" in n for n in state.notes)
 
 
 def test_savior_locks_once(tmp):
@@ -1288,7 +1346,10 @@ def main():
             test_scalp_only_when_mixed,
             test_savior_scales_with_duration,
             test_savior_favorable_locks_and_exits,
-            test_savior_adverse_cuts_below_entry,
+            test_savior_adverse_waits_until_force,
+            test_savior_adverse_room_no_instant_recover,
+            test_savior_stall_sells_without_progress,
+            test_savior_progress_resets_stall,
             test_savior_locks_once,
             test_savior_tp_takes_precedence,
             test_joined_late_not_traded,

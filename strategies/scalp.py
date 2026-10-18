@@ -55,12 +55,9 @@ class ScalpSim(BaseSim):
             f"cancel no-fill @{format_time(self.cancel_left_seconds())} left"
             if self.cancel_left_pct > 0 else "never cancel"
         )
-        savior = (
-            f"savior @{format_time(self.savior_left_seconds())} left"
-            if self.savior_left_pct > 0 else "no savior"
-        )
+        savior = self.savior_summary_text()
         return (
-            f"🎯 Scalp: buy ask≤{self.entry_cents}¢ ×{self.contracts} when {gate}, "
+            f"Scalp: buy ask≤{self.entry_cents}¢ x{self.contracts} when {gate}, "
             f"{tp}, {time_x}, {stop}, {cancel}, {savior} "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )

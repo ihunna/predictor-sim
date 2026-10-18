@@ -243,10 +243,16 @@ class PredictWS:
         self.prices = deque()
         self.last_message = time.time()
         self.disconnected_at = time.time()
-        threading.Thread(target=self._run_loop, daemon=True).start()
-        threading.Thread(target=self._watchdog_loop, daemon=True).start()
+        # Optional status sink (UI). Never write to stdout/stderr from WS threads once Live owns the TTY.
+        self._on_status = None
+        threading.Thread(target=self._run_loop, daemon=True, name="predict-ws").start()
+        threading.Thread(target=self._watchdog_loop, daemon=True, name="predict-ws-watchdog").start()
 
     # public
+
+    def set_status_handler(self, handler):
+        """Route connect/reconnect warnings to ``handler(message)`` (e.g. ``ui.event``). Thread-safe enough for UI."""
+        self._on_status = handler
 
     def set_market(self, market_id):
         """Make ``market_id`` the only subscribed book; the next window's book is added later by ``prepare_next``.
@@ -339,11 +345,6 @@ class PredictWS:
         with self.lock:
             return self.markets[1] if len(self.markets) > 1 else None
 
-    def next_market(self):
-        """The next window's market id once ``prepare_next`` has added it, else None."""
-        with self.lock:
-            return self.markets[1] if len(self.markets) > 1 else None
-
     def latest_price(self):
         with self.lock:
             if not self.prices:
@@ -387,6 +388,22 @@ class PredictWS:
 
     # internals
 
+    def _status(self, message):
+        """Report socket status without fighting Rich Live's redirected TTY."""
+        handler = self._on_status
+        if handler is not None:
+            try:
+                handler(message)
+                return
+            except Exception:
+                pass
+        # Pre-UI only (Live redirects stdout+stderr once started).
+        try:
+            sys.stdout.write(message + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
     def _send(self, method, params):
         ws = self.ws
         if ws is None or not self.connected:
@@ -410,8 +427,7 @@ class PredictWS:
             self.last_message = now
             markets = list(self.markets)
             watched = list(self.watched)
-        sys.stdout.write(f"\n🔌 Predict socket {verb} in {took:.1f}s\n")
-        sys.stdout.flush()
+        self._status(f"[ws] Predict socket {verb} in {took:.1f}s")
         self._send("setLanguage", ["en"])
         self._send("subscribe", [self.price_topic])
         for m in markets:
@@ -473,12 +489,18 @@ class PredictWS:
             self.connected = False
 
     def _close_ws(self):
+        """Force ``run_forever`` to exit so ``_run_loop`` opens a fresh socket."""
         ws = self.ws
-        if ws is not None:
-            try:
-                ws.close()
-            except Exception:
-                pass
+        if ws is None:
+            return
+        try:
+            ws.keep_running = False
+        except Exception:
+            pass
+        try:
+            ws.close()
+        except Exception:
+            pass
 
     def _on_close(self, ws, code, msg):
         self._mark_disconnected()
@@ -495,13 +517,11 @@ class PredictWS:
                 down_for = now - self.disconnected_at if self.disconnected_at else 0.0
             quiet_for = now - self.last_message
             if connected and quiet_for > WS_QUIET_SECONDS:
-                sys.stdout.write(f"\n⚠️ Predict socket quiet for {quiet_for:.0f}s while connected, reconnecting...\n")
-                sys.stdout.flush()
+                self._status(f"[!] Predict socket quiet for {quiet_for:.0f}s while connected, reconnecting...")
                 self._mark_disconnected()
                 self._close_ws()
             elif not connected and down_for > WS_CONNECT_TIMEOUT_SECONDS:
-                sys.stdout.write(f"\n⚠️ Predict socket not connected after {down_for:.0f}s, retrying...\n")
-                sys.stdout.flush()
+                self._status(f"[!] Predict socket not connected after {down_for:.0f}s, retrying...")
                 with self.lock:
                     self.disconnected_at = now
                 self._close_ws()
