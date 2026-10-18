@@ -514,7 +514,7 @@ class BaseSim:
     start_mode = "dual"  # WindowState.mode at the start of each window
 
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
-                 max_prev_move_pct=0.0, cancel_left_pct=40.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
+                 max_prev_move_pct=0.0, cancel_left_pct=67.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
@@ -616,7 +616,7 @@ class BaseSim:
         return min(self.contracts, math.ceil(first_cost / (1.0 - self.hedge) - 1e-9))
 
     def cancel_left_seconds(self):
-        """Time left at which unfilled orders are cancelled (2:00 left of a 5m window)."""
+        """Time left at which unfilled orders are cancelled (default 67%: ~3:20 left of 5m)."""
         return self.duration * 60 * self.cancel_left_pct / 100.0
 
     def prev_move_skip_reason(self, prev_move_pct):
@@ -655,6 +655,10 @@ class BaseSim:
             state.trading = False
             state.notes.append(f"joined_late_{int(now - window_start)}s")
             state.notes.append("not_traded")
+        # Seed structure/RSI so the UI shows them before the decide thread finishes
+        # (against/dual overwrite with streak / gate-aware refresh later).
+        avg, vs_avg, rsi, structure = self.refresh_structure(window_start)
+        state.avg_move_pct, state.move_vs_avg, state.rsi, state.structure = avg, vs_avg, rsi, structure or ""
         self.current = state
         return state
 

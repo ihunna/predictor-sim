@@ -367,33 +367,32 @@ class Dashboard:
                                   style="bold green" if prev_move > 0 else "bold red" if prev_move < 0 else "bold")
             parts.append(title_line)
 
-            if sim.strategy in ("against", "dual"):
-                parts.append(Text(""))
-                structure = (state.structure if state.structure else getattr(sim, "structure", None)) or "unknown"
-                struct_line = Text()
-                struct_line.append("Structure ", style="dim")
-                struct_line.append(
-                    structure.upper() if structure != "unknown" else "unknown",
-                    style=("bold green" if structure == "up" else "bold red" if structure == "down"
-                           else "bold yellow" if structure == "mixed" else "bold dim"))
-                if sim.strategy == "against":
-                    struct_line.append("   streak ", style="dim")
-                    struct_line.append(state.streak_before or "unknown", style="bold")
-                struct_line.append("   move ", style="dim")
-                if state.move_vs_avg is not None:
-                    struct_line.append(f"{state.move_vs_avg:.2f}× avg", style="bold")
-                else:
-                    struct_line.append("--", style="dim")
-                if state.rsi is not None:
-                    struct_line.append("   RSI ", style="dim")
-                    struct_line.append(f"{state.rsi:.0f}", style="bold")
-                elif getattr(sim, "rsi", None) is not None:
-                    struct_line.append("   RSI ", style="dim")
-                    struct_line.append(f"{sim.rsi:.0f}", style="bold")
-                else:
-                    struct_line.append("   RSI ", style="dim")
-                    struct_line.append("--", style="dim")
-                parts.append(struct_line)
+            parts.append(Text(""))
+            structure = (state.structure if state.structure else getattr(sim, "structure", None)) or "unknown"
+            struct_line = Text()
+            struct_line.append("Structure ", style="dim")
+            struct_line.append(
+                structure.upper() if structure != "unknown" else "unknown",
+                style=("bold green" if structure == "up" else "bold red" if structure == "down"
+                       else "bold yellow" if structure == "mixed" else "bold dim"))
+            if sim.strategy == "against":
+                struct_line.append("   streak ", style="dim")
+                struct_line.append(state.streak_before or "unknown", style="bold")
+            struct_line.append("   move ", style="dim")
+            if state.move_vs_avg is not None:
+                struct_line.append(f"{state.move_vs_avg:.2f}× avg", style="bold")
+            else:
+                struct_line.append("--", style="dim")
+            if state.rsi is not None:
+                struct_line.append("   RSI ", style="dim")
+                struct_line.append(f"{state.rsi:.0f}", style="bold")
+            elif getattr(sim, "rsi", None) is not None:
+                struct_line.append("   RSI ", style="dim")
+                struct_line.append(f"{sim.rsi:.0f}", style="bold")
+            else:
+                struct_line.append("   RSI ", style="dim")
+                struct_line.append("--", style="dim")
+            parts.append(struct_line)
 
             parts.append(Text(""))
             price_line = Text()
@@ -529,11 +528,19 @@ class Dashboard:
         for line in events:
             parts.append(Text(line, style="dim"))
 
+        def _struct_rsi_now():
+            if state is None:
+                return ""
+            st = state.structure or getattr(sim, "structure", None) or "—"
+            rsi = state.rsi if state.rsi is not None else getattr(sim, "rsi", None)
+            return f" · now {st}" + (f" RSI {rsi:.0f}" if rsi is not None else " RSI —")
+
         if sim.strategy == "leader":
             skip = (f"leader: first to {sim.leader_at_cents}¢ → buy at ask ≤{sim.leader_max_cents}¢, "
                     + (f"last move ≥{sim.min_prev_move_pct:.2f}%" if sim.min_prev_move_pct > 0 else "any move"))
+            skip += _struct_rsi_now()
             if state is not None and state.action:
-                skip += f" · now: {state.action}"
+                skip += f" · {state.action}"
         elif sim.strategy == "combo":
             if sim.trend_windows > 0:
                 skip = (f"streaks: {sim.against_min_streak}+ in a row "
@@ -546,8 +553,9 @@ class Dashboard:
                         f"last move ≥{sim.against_min_move_pct:.2f}% → other side"
                         + (f" · last move <{sim.continue_max_move_pct:.2f}% & slowing → streak side"
                            if sim.continue_max_move_pct > 0 else "") + ", else skip")
+            skip += _struct_rsi_now()
             if state is not None and state.action:
-                skip += f" · now: {state.action}"
+                skip += f" · {state.action}"
         elif sim.strategy == "against":
             tp = (f"take-profit {sim.take_profit_cents}¢" if sim.take_profit_cents > 0 and sim.take_profit_all
                   else "no take-profit")
@@ -565,37 +573,44 @@ class Dashboard:
             else:
                 skip = (f"against[{filt}]: exactly {sim.against_min_streak} against structure + RSI agree"
                         f" (up>{sim.rsi_agree_up:g}/down<{sim.rsi_agree_down:g}){vs_avg} → other side · {tp}")
+            skip += _struct_rsi_now()
             if state is not None and state.action:
-                skip += f" · now: {state.action}"
+                skip += f" · {state.action}"
         elif sim.strategy == "fav":
             skip = f"favourite only: 2 in a row → favourite ≤{sim.fav_max_cents}¢, else skip"
+            skip += _struct_rsi_now()
             if state is not None and state.action:
-                skip += f" · now: {state.action}"
+                skip += f" · {state.action}"
         elif sim.strategy == "regime":
             skip = (f"regime: 2 in a row → favourite ≤{sim.fav_max_cents}¢, dual if one in last "
                     f"{sim.dual_lookback}, else skip")
+            skip += _struct_rsi_now()
             if state is not None and state.action:
-                skip += f" · now: {state.action}"
+                skip += f" · {state.action}"
         elif sim.strategy == "dual":
             need = getattr(sim, "require_structure", "mixed") or "any"
-            skip = f"both @{sim.limit_cents}¢ when structure={need}"
-            if state is not None:
-                st = state.structure or getattr(sim, "structure", None) or "—"
-                rsi = state.rsi if state.rsi is not None else getattr(sim, "rsi", None)
-                skip += f" · now {st}" + (f" RSI {rsi:.0f}" if rsi is not None else " RSI —")
-                if state.action:
-                    skip += f" · {state.action}"
+            cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
+                      if sim.cancel_left_pct > 0 else "no cancel")
+            skip = f"both @{sim.limit_cents}¢ when structure={need} · {cancel}"
+            skip += _struct_rsi_now()
+            if state is not None and state.action:
+                skip += f" · {state.action}"
         elif sim.strategy == "scalp":
+            need = getattr(sim, "require_structure", "mixed") or "any"
             tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
             stop = (f"stop ≤{sim.stop_cents}¢×{sim.stop_confirm_seconds}s"
                     if getattr(sim, "stop_cents", 0) > 0 else "no stop")
             time_x = (f"exit @{sim.exit_left_seconds}s left"
                       if getattr(sim, "exit_left_seconds", 0) > 0 else "no time exit")
-            skip = f"buy ≤{sim.entry_cents}¢ · {tp} · {time_x} · {stop}"
+            cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
+                      if sim.cancel_left_pct > 0 else "no cancel")
+            skip = f"buy ≤{sim.entry_cents}¢ when structure={need} · {tp} · {time_x} · {stop} · {cancel}"
+            skip += _struct_rsi_now()
             if state is not None and state.action:
-                skip += f" · now: {state.action}"
+                skip += f" · {state.action}"
         else:
             skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
+            skip += _struct_rsi_now()
         if sim.strategy == "leader":
             prices = "at ask"
         elif sim.strategy == "scalp":

@@ -1,10 +1,10 @@
 """Cheap-side scalper: buy a dumped ask, take profit on bid, else full loss at settle.
 
-5m BTC ask-walk replay (miss = −entry): buy ≤30¢, TP bid ≥60¢ — both halves green.
-Hold-to-settle on the cheap side is a loss in that sample (0 settle wins after missed TP);
-optional ``target_cents=0`` / time-exit / confirmed stop remain available via flags.
+Same structure gate as dual (default: only when PriceStructure is mixed). RSI is refreshed
+onto the window for the UI/log the same way; it is not an extra skip filter (dual has none).
 
-Bid is inferred as ``1 − other_ask`` (same convention as against take-profit).
+Default path: buy ≤30¢, TP bid ≥60¢. Optional ``target_cents=0`` / time-exit / confirmed stop
+via flags. Bid is inferred as ``1 − other_ask`` (same convention as against take-profit).
 """
 
 from logs import format_time
@@ -18,9 +18,12 @@ class ScalpSim(BaseSim):
     start_mode = "against"
 
     def __init__(self, *args, entry_cents=30, target_cents=60, exit_left_seconds=0,
-                 stop_cents=0, stop_confirm_seconds=5, **kwargs):
-        kwargs.setdefault("cancel_left_pct", 0.0)
+                 stop_cents=0, stop_confirm_seconds=5, require_structure="mixed", **kwargs):
+        # Block new entries / cancel unfilled once cancel_left_pct of the window is left
+        # (default 67% ≈ first third only; 60m scalp: late ≤30¢ fills rarely reach TP60).
+        kwargs.setdefault("cancel_left_pct", 67.0)
         kwargs.setdefault("stop_loss_seconds", 0)
+        kwargs.setdefault("max_prev_move_pct", 0.0)
         super().__init__(*args, **kwargs)
         self.entry_cents = max(1, int(entry_cents))
         # 0 = hold to settle (no take-profit); default 60 from 5m replay
@@ -31,6 +34,7 @@ class ScalpSim(BaseSim):
         # 0 = no hard stop
         self.stop_cents = max(0, int(stop_cents if stop_cents is not None else 0))
         self.stop_confirm_seconds = max(0, int(stop_confirm_seconds))
+        self.require_structure = (require_structure or "").strip().lower()
 
     def summarize(self):
         if self.target_cents > 0:
@@ -45,9 +49,17 @@ class ScalpSim(BaseSim):
             f"flatten at {format_time(self.exit_left_seconds)} left"
             if self.exit_left_seconds > 0 else "no time exit"
         )
+        gate = (
+            f"structure={self.require_structure}"
+            if self.require_structure else "any structure"
+        )
+        cancel = (
+            f"cancel no-fill @{format_time(self.cancel_left_seconds())} left"
+            if self.cancel_left_pct > 0 else "never cancel"
+        )
         return (
-            f"🎯 Scalp: buy ask≤{self.entry_cents}¢ ×{self.contracts}, "
-            f"{tp}, {time_x}, {stop} "
+            f"🎯 Scalp: buy ask≤{self.entry_cents}¢ ×{self.contracts} when {gate}, "
+            f"{tp}, {time_x}, {stop}, {cancel} "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
 
@@ -58,10 +70,26 @@ class ScalpSim(BaseSim):
             return 0.0
         return round(1.0 - other, 4)
 
+    def _structure_ok(self, state):
+        """Same gate as dual: refresh trend; require mixed (or whatever require_structure is)."""
+        if not self.require_structure:
+            return True
+        avg, vs_avg, rsi, structure = self.refresh_structure(state.window_start)
+        state.avg_move_pct = avg
+        state.move_vs_avg = vs_avg
+        state.rsi = rsi
+        state.structure = structure or ""
+        return (structure or "").lower() == self.require_structure
+
     def _first_orders(self, state, remaining, up_ask, down_ask):
         if self.place_at is not None and remaining > self.place_at:
             return []
         if self.exit_left_seconds > 0 and remaining <= self.exit_left_seconds:
+            return []
+        # Same duration-relative cutoff as dual cancel: no new buys once that much is left.
+        if self.cancel_left_pct > 0 and remaining <= self.cancel_left_seconds():
+            return []
+        if not self._structure_ok(state):
             return []
 
         entry = self.entry_cents / 100.0
@@ -78,10 +106,16 @@ class ScalpSim(BaseSim):
         state.bet_side = side
         state.take_profit = self.target_cents / 100.0 if self.target_cents > 0 else 0.0
         state.action = "scalp"
+        struct = state.structure or "any"
         if self.target_cents > 0:
-            state.action_reason = f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_{self.target_cents}c"
+            state.action_reason = (
+                f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_{self.target_cents}c"
+                f"_structure_{struct}"
+            )
         else:
-            state.action_reason = f"buy_{side.lower()}_{int(round(ask * 100))}c_hold"
+            state.action_reason = (
+                f"buy_{side.lower()}_{int(round(ask * 100))}c_hold_structure_{struct}"
+            )
         state.notes.append(state.action_reason)
         state.scalp_stop_since = None
         return [Order(side, "main", ask, self.contracts, remaining)]

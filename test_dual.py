@@ -176,10 +176,13 @@ def test_quiet_dual_waits_for_enter_after(tmp):
     assert "never_placed" in sim.settle(state, "Up", PTB, PTB, 0.0)["notes"]
 
 
-def scalp_sim(tmp, entry=30, target=60, exit_left=0, stop=0, confirm=5):
+def scalp_sim(tmp, entry=30, target=60, exit_left=0, stop=0, confirm=5, require_structure="",
+              cancel_left_pct=0.0):
+    """Structure gate / cancel off by default so fill/TP tests stay place-on-cheap."""
     return ScalpSim("btc", 5, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, exit_left_seconds=exit_left,
-                    stop_cents=stop, stop_confirm_seconds=confirm)
+                    stop_cents=stop, stop_confirm_seconds=confirm,
+                    require_structure=require_structure, cancel_left_pct=cancel_left_pct)
 
 
 def test_scalp_hold_to_settle(tmp):
@@ -260,6 +263,27 @@ def test_scalp_time_exit(tmp):
     ])
     assert state.stop_side == "Up" and abs(state.stop_price - 0.25) < 1e-9
     assert any("time_sold_up" in n for n in state.notes)
+
+
+def test_scalp_only_when_mixed(tmp):
+    """Default scalp gate matches dual: only buy cheap when structure is mixed."""
+    sim = scalp_sim(tmp, require_structure="mixed")
+    seed_up_moves(sim, START)
+    state = run_window(sim, [(0, 0.50, 0.51), (20, 0.25, 0.76)], btc=PTB, ptb=PTB)
+    assert state.structure == "up"
+    assert state.placed_time_left is None
+
+    sim2 = scalp_sim(tmp, require_structure="mixed")
+    seed_mixed_moves(sim2, START)
+    state2 = run_window(sim2, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+        (60, 0.40, 0.38),
+    ], btc=PTB, ptb=PTB)
+    assert state2.structure == "mixed"
+    assert state2.action == "scalp"
+    assert state2.up_fill_price == 0.25
+    assert "structure_mixed" in state2.action_reason
 
 
 def test_both_fill_and_lowest_times(tmp):

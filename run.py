@@ -107,6 +107,12 @@ def previous_window_move_pct(ws, coin, duration, state):
     return (prev_close - prev_open) / prev_open * 100
 
 
+def _fill_structure(sim, state, prev_move):
+    """Populate structure/RSI/move-vs-avg on every strategy for the UI and trade log."""
+    avg, vs_avg, rsi, structure = sim.refresh_structure(state.window_start, prev_move_pct=prev_move)
+    state.avg_move_pct, state.move_vs_avg, state.rsi, state.structure = avg, vs_avg, rsi, structure or ""
+
+
 def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     """Holds the orders until the last window's move is known, then trades or skips (the --max-prev-move-pct filter)."""
     try:
@@ -114,14 +120,24 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     except Exception:
         prev_move = None
     if not state.decision_pending:
+        # Still refresh so skipped / late-join windows log structure + RSI.
+        if sim.strategy not in ("against", "dual", "scalp"):
+            _fill_structure(sim, state, prev_move)
         ui.prev_move_known(state, prev_move, None)
         return
     if sim.strategy in ("regime", "fav", "against", "combo"):
+        # against refreshes inside regime_decision (with streak_len); others need it here.
+        if sim.strategy != "against":
+            _fill_structure(sim, state, prev_move)
         decide_regime(ui, sim, state, prev_move)
         return
     if sim.strategy == "dual":
         decide_dual(ui, sim, state, prev_move)
         return
+    if sim.strategy == "scalp":
+        decide_scalp(ui, sim, state, prev_move)
+        return
+    _fill_structure(sim, state, prev_move)
     reason = sim.prev_move_skip_reason(prev_move)
     sim.resolve_decision(state, reason)
     message = None
@@ -140,25 +156,43 @@ def decide_window(ui, ws, sim, state, coin, duration, feed_id):
     ui.prev_move_known(state, prev_move, message)
 
 
-def decide_dual(ui, sim, state, prev_move):
-    """Refresh structure/RSI (same fields as against), then place both limits only when mixed."""
+def _structure_gate_reason(sim, state, prev_move):
+    """Refresh structure/RSI and return skip reason if require_structure is not met (dual + scalp)."""
     avg, vs_avg, rsi, structure = sim.refresh_structure(state.window_start, prev_move_pct=prev_move)
     state.avg_move_pct, state.move_vs_avg, state.rsi, state.structure = avg, vs_avg, rsi, structure or ""
     reason = sim.prev_move_skip_reason(prev_move)
     need = (getattr(sim, "require_structure", "") or "").strip().lower()
     if not reason and need and (structure or "").lower() != need:
         reason = f"structure_{structure or 'unknown'}_need_{need}"
-    sim.resolve_decision(state, reason)
     struct = structure or "unknown"
     streak = f"structure {struct}"
     if rsi is not None:
         streak += f", RSI {rsi:.0f}"
     if vs_avg is not None:
         streak += f", move {vs_avg:.2f}× avg"
+    return reason, streak
+
+
+def decide_dual(ui, sim, state, prev_move):
+    """Refresh structure/RSI, then place both limits only when mixed (same gate as scalp)."""
+    reason, streak = _structure_gate_reason(sim, state, prev_move)
+    sim.resolve_decision(state, reason)
     if reason:
         message = f"⏸️ Skipping dual ({reason}; {streak}): logging this window without trading."
     else:
         message = (f"🎯 Dual window ({streak}): placing both {sim.limit_cents}¢ ×{sim.contracts} limits.")
+    ui.prev_move_known(state, prev_move, message)
+
+
+def decide_scalp(ui, sim, state, prev_move):
+    """Same structure/RSI refresh + structure gate as dual; then watch for ask≤entry."""
+    reason, streak = _structure_gate_reason(sim, state, prev_move)
+    sim.resolve_decision(state, reason)
+    tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
+    if reason:
+        message = f"⏸️ Skipping scalp ({reason}; {streak}): logging this window without trading."
+    else:
+        message = (f"🎯 Scalp window ({streak}): buy ask≤{sim.entry_cents}¢ ×{sim.contracts}, {tp}.")
     ui.prev_move_known(state, prev_move, message)
 
 
@@ -397,7 +431,8 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢) only when BTC structure is mixed "
                              "(no quiet/skew/enter-after). "
-                             "scalp: buy ask≤--scalp-entry, TP bid≥--scalp-target (default 30→60; miss=−entry). "
+                             "scalp: buy ask≤--scalp-entry when structure matches --dual-structure (default mixed), "
+                             "TP bid≥--scalp-target (default 30→60; miss=−entry). "
                              "(default: regime for 5m, dual otherwise)")
 
     parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
@@ -465,7 +500,8 @@ def parse_args():
                         help="Dual skew: if cheap never prints, also rest both @--limit (default dual already "
                              "rests both when structure is mixed).")
     parser.add_argument("--dual-structure", default="mixed", metavar="NAME",
-                        help="Dual: only place when PriceStructure equals this (default mixed; empty = any).")
+                        help="Dual and scalp: only trade when PriceStructure equals this "
+                             "(default mixed; empty = any). RSI is logged/shown, not gated.")
 
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 30; 5m replay).")
@@ -492,9 +528,10 @@ def parse_args():
     parser.add_argument("--stop-loss-min", type=int, default=3, metavar="CENTS",
                         help="Only sell when the losing side's bid is at least this many cents; below that keep "
                              "the contracts and log it (default 3; 0 = any price).")
-    parser.add_argument("--cancel-left-pct", type=float, default=40.0,
-                        help="Cancel both orders when nothing has filled and this much of the window is left, "
-                             "in percent (default 40: 2:00 left of 5m, 6:00 of 15m, 24:00 of 60m; 0 = never).")
+    parser.add_argument("--cancel-left-pct", type=float, default=67.0,
+                        help="Cancel unfilled / block new scalp entries when this much of the window is left, "
+                             "in percent (default 67 ≈ first third only: ~3:20 left of 5m, ~10:00 of 15m, "
+                             "~40:00 of 60m; 0 = never). From 60m scalp replay: late fills rarely hit TP.")
     parser.add_argument("--capital", type=float, default=100.0,
                         help="Starting balance when there is no trades log yet (default 100).")
     parser.add_argument("--reload-to", type=float, default=None, metavar="DOLLARS",
@@ -615,9 +652,8 @@ def main():
                         min_prev_move_pct=args.min_prev_move_pct, watch_from_pct=args.watch_from_pct,
                         watch_to_pct=args.watch_to_pct)
     elif strategy == "dual":
-        # Mixed-structure both@limit: no cancel / stop-loss / quiet / skew by default.
+        # Mixed-structure both@limit; no-fill cancel is --cancel-left-pct of the window (duration-relative).
         dual_common = dict(common)
-        dual_common["cancel_left_pct"] = 0.0
         dual_common["stop_loss_seconds"] = 0
         sim = DualSim(*sim_args, **dual_common, require_structure=args.dual_structure,
                       enter_after_seconds=args.enter_after, quiet_max_pct=args.quiet_max_pct,
@@ -625,9 +661,13 @@ def main():
                       strand_exit_seconds=args.strand_exit,
                       allow_balanced=True if args.cheap_ask == 0 else args.balanced_dual)
     elif strategy == "scalp":
-        sim = ScalpSim(*sim_args, **common, entry_cents=args.scalp_entry,
+        # Same structure gate as dual; no-fill cancel via --cancel-left-pct (duration-relative).
+        scalp_common = dict(common)
+        scalp_common["stop_loss_seconds"] = 0
+        sim = ScalpSim(*sim_args, **scalp_common, entry_cents=args.scalp_entry,
                        target_cents=args.scalp_target, exit_left_seconds=args.scalp_exit_left,
-                       stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm)
+                       stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm,
+                       require_structure=args.dual_structure)
     elif strategy == "against":
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,

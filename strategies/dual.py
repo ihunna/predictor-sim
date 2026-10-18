@@ -1,7 +1,9 @@
 """Dual: rest both sides at the limit, only when BTC structure is mixed.
 
 No quiet-Δ, enter-after, cheap-skew, or prev-move gate by default. Structure comes from
-the shared ``PriceStructure`` (official window moves). Unknown / up / down → skip.
+the shared ``PriceStructure`` (official window moves; lookbacks scale with duration).
+Unknown / up / down → skip. Unfilled both-sides cancel at ``cancel_left_pct`` of the window
+(duration-relative; default 67% left ≈ only the first third of the window).
 """
 
 from logs import format_time
@@ -16,8 +18,8 @@ class DualSim(BaseSim):
 
     def __init__(self, *args, require_structure="mixed", enter_after_seconds=0, quiet_max_pct=0.0,
                  cheap_cents=0, pair_cents=70, strand_exit_seconds=0, allow_balanced=True, **kwargs):
-        # No mid-window cancel / stop-loss filters unless the caller opts in.
-        kwargs.setdefault("cancel_left_pct", 0.0)
+        # Cancel no-fill is duration-relative via cancel_left_pct (default 67% left ≈ first third).
+        kwargs.setdefault("cancel_left_pct", 67.0)
         kwargs.setdefault("stop_loss_seconds", 0)
         kwargs.setdefault("max_prev_move_pct", 0.0)
         super().__init__(*args, **kwargs)
@@ -34,9 +36,13 @@ class DualSim(BaseSim):
             f"structure={self.require_structure}"
             if self.require_structure else "any structure"
         )
+        cancel = (
+            f"cancel no-fill @{format_time(self.cancel_left_seconds())} left"
+            if self.cancel_left_pct > 0 else "never cancel"
+        )
         return (
             f"🎯 Dual: both @{self.limit_cents}¢ ×{self.contracts} when {gate} "
-            f"(no Δ / enter-after / skew) "
+            f"({cancel}; no Δ / enter-after / skew) "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
 
