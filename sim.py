@@ -425,6 +425,10 @@ class WindowState:
     maker_fee_bps: int = 0
     taker_fee_bps: int = 0
     notes: list = field(default_factory=list)
+    # Savior exit (one-sided holds): locked once when remaining first hits savior arm.
+    savior_cut_cents: int | None = None
+    savior_reason: str = ""
+    savior_entry_cents: int | None = None
 
     def record_book(self, depth, up_ask, down_ask):
         """One order-book sample per tick, for the window's average depth and spread."""
@@ -515,7 +519,8 @@ class BaseSim:
 
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.0, cancel_left_pct=67.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
-                 stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14):
+                 stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14,
+                 savior_left_pct=25.0):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
@@ -525,6 +530,8 @@ class BaseSim:
         self.cancel_left_pct = cancel_left_pct
         self.hedge_cents = hedge_cents
         self.hedge = hedge_cents / 100.0
+        # 0 = off; default 25% of window left (15:00 on 60m, 3:45 on 15m, 1:15 on 5m)
+        self.savior_left_pct = max(0.0, float(savior_left_pct))
         self.coin = coin
         self.duration = duration
         self.limit = limit_cents / 100.0
@@ -597,6 +604,10 @@ class BaseSim:
             f"cancel both if nothing has filled with {format_time(self.cancel_left_seconds())} left"
             if self.cancel_left_pct > 0 else "never cancel"
         )
+        savior = (
+            f"savior one-side @{format_time(self.savior_left_seconds())} left"
+            if self.savior_left_pct > 0 else "no savior"
+        )
         hedge = (
             f"after one side fills, lock in at {self.hedge_cents}¢ on the other"
             if self.hedge_cents > 0 else "no hedge"
@@ -609,7 +620,7 @@ class BaseSim:
                 stop += f" (only if it sells for {self.stop_loss_min_cents}¢+)"
         else:
             stop = f"stop-loss paused (logging what it would sell at {format_time(self.stop_loss_seconds)} left)"
-        return f"{hedge}, {cancel}, {stop}"
+        return f"{hedge}, {cancel}, {savior}, {stop}"
 
     def hedge_contracts(self, first_cost):
         """Contracts at the hedge price that break even if that side wins: cost / (1 - hedge), rounded up."""
@@ -618,6 +629,113 @@ class BaseSim:
     def cancel_left_seconds(self):
         """Time left at which unfilled orders are cancelled (default 67%: ~3:20 left of 5m)."""
         return self.duration * 60 * self.cancel_left_pct / 100.0
+
+    def savior_left_seconds(self):
+        """Time left when savior arms (default 25% of window). 0 if disabled."""
+        if self.savior_left_pct <= 0:
+            return 0.0
+        return self.duration * 60 * self.savior_left_pct / 100.0
+
+    @staticmethod
+    def _bid_for(side, up_ask, down_ask):
+        other = down_ask if side == "Up" else up_ask
+        if other <= 0:
+            return 0.0
+        return round(1.0 - other, 4)
+
+    def _one_side_held(self, state):
+        """Side name if exactly one binary side is held; else None (skip savior on dual both)."""
+        up, down = state.held("Up"), state.held("Down")
+        if up > 0 and down <= 0:
+            return "Up"
+        if down > 0 and up <= 0:
+            return "Down"
+        return None
+
+    def _current_winner(self, state, up_ask, down_ask):
+        """Currently winning side from BTC vs PTB; if flat, higher ask on the book."""
+        move = state.btc_move_pct
+        if move is not None and move > 1e-12:
+            return "Up"
+        if move is not None and move < -1e-12:
+            return "Down"
+        if up_ask > 0 and down_ask > 0:
+            return "Up" if up_ask >= down_ask else "Down"
+        if up_ask > 0:
+            return "Up"
+        if down_ask > 0:
+            return "Down"
+        return "Up"
+
+    def _lock_savior_cut(self, state, side, up_ask, down_ask):
+        """One-shot: lock cut cents from winner strength (cheapest ask + |BTC Δ| vs PTB)."""
+        entry = state.avg_price(side)
+        if entry <= 0:
+            return
+        entry_cents = int(round(entry * 100))
+        state.savior_entry_cents = entry_cents
+        winner = self._current_winner(state, up_ask, down_ask)
+        low = state.lowest_up if winner == "Up" else state.lowest_down
+        winner_low_cents = int(round(low * 100)) if low < float("inf") and low > 0 else entry_cents
+        move = state.btc_move_pct
+        abs_move = abs(move) if move is not None else 0.0
+        conf = 0.0
+        if winner_low_cents >= 40:
+            conf += 0.4
+        conf += min(0.6, (abs_move / 0.20) * 0.6 if abs_move > 0 else 0.0)
+        conf = min(1.0, conf)
+        if state.take_profit > 0:
+            target_cents = int(round(state.take_profit * 100))
+        else:
+            target_cents = max(entry_cents + 30, min(99, entry_cents * 2))
+        span = max(1, target_cents - entry_cents)
+        if winner == side:
+            premium = int(round(5 + conf * 0.5 * span))
+            tone = "favorable"
+        else:
+            premium = int(round(5 - conf * 10))
+            tone = "adverse"
+        cut = max(1, min(target_cents - 1, entry_cents + premium))
+        state.savior_cut_cents = cut
+        state.savior_reason = (
+            f"{tone}_winner_{winner.lower()}_low_{winner_low_cents}c_"
+            f"delta_{abs_move:.3f}pct_conf_{conf:.2f}_cut_{cut}c"
+        )
+        state.notes.append(f"savior_locked_{state.savior_reason}")
+
+    def _maybe_savior_exit(self, state, remaining, up_ask, down_ask):
+        """After arm_left, lock cut once from winner strength; flatten when bid reaches locked cut."""
+        if self.savior_left_pct <= 0 or state.tp_side or state.stop_time_left is not None:
+            return
+        side = self._one_side_held(state)
+        if not side:
+            return
+        held = state.held(side)
+        bid = self._bid_for(side, up_ask, down_ask)
+        if held <= 0 or bid <= 0:
+            return
+        arm = self.savior_left_seconds()
+        if remaining > arm:
+            return
+        if state.savior_cut_cents is None:
+            self._lock_savior_cut(state, side, up_ask, down_ask)
+            if state.savior_cut_cents is None:
+                return
+        cut = state.savior_cut_cents / 100.0
+        entry = (state.savior_entry_cents or int(round(state.avg_price(side) * 100))) / 100.0
+        # Profit cut: wait until bid >= cut. Loss cut (cut < entry): flatten on any valid bid.
+        if cut + 1e-9 >= entry and bid + 1e-9 < cut:
+            return
+        state.stop_side, state.stop_contracts, state.stop_price = side, held, bid
+        state.stop_time_left = remaining
+        state.notes.append(
+            f"savior_sold_{side.lower()}_{held}@{round(bid * 100)}_"
+            f"{state.savior_reason}_at_{format_time(remaining)}_left"
+        )
+
+    def _position_exits(self, state, now, remaining, up_ask, down_ask):
+        """Strategy hooks run TP/stops here; default is savior only. Called after fills each tick."""
+        self._maybe_savior_exit(state, remaining, up_ask, down_ask)
 
     def prev_move_skip_reason(self, prev_move_pct):
         """Skip reason when the last window moved ``max_prev_move_pct``% or more, or its move is unknown;
@@ -737,6 +855,8 @@ class BaseSim:
         self._maybe_hedge(state, remaining, asks)
         self._check_stop_points(state, remaining, asks)
         self._maybe_stop(state, remaining, asks)
+        if state.stop_time_left is None and state.tp_side is None:
+            self._position_exits(state, now, remaining, up_ask, down_ask)
 
     def _first_orders(self, state, remaining, up_ask, down_ask):
         """Orders to place now (both asks are known); empty to wait."""

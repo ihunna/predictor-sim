@@ -44,10 +44,14 @@ class LeaderSim(BaseSim):
 
     def summarize(self):
         start, end = self.watch_seconds()
+        savior = (
+            f"savior @{format_time(self.savior_left_seconds())} left"
+            if self.savior_left_pct > 0 else "no savior"
+        )
         return (
             f"🎯 Leader: {self.filter_text()}; from {format_time(start)} to {format_time(end)} in, when a side's bid "
             f"first reaches {self.leader_at_cents}¢, buy {self.contracts} of it at its ask (≤{self.leader_max_cents}¢), "
-            f"held to the end; no leader -> skip | capital ${self.capital:.2f} ({self.capital_source})"
+            f"held to the end ({savior}); no leader -> skip | capital ${self.capital:.2f} ({self.capital_source})"
         )
 
     def order_cost(self):
@@ -97,6 +101,8 @@ class LeaderSim(BaseSim):
             order.check(remaining, asks[order.side])
         self._track_other_side(state, remaining, asks)
         self._check_stop_points(state, remaining, asks)
+        if state.stop_time_left is None and state.tp_side is None:
+            self._position_exits(state, now, remaining, up_ask, down_ask)
 
     def resolve_decision(self, state, skip_reason=None, mode="leader"):
         super().resolve_decision(state, skip_reason, mode="leader")

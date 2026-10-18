@@ -40,9 +40,13 @@ class DualSim(BaseSim):
             f"cancel no-fill @{format_time(self.cancel_left_seconds())} left"
             if self.cancel_left_pct > 0 else "never cancel"
         )
+        savior = (
+            f"savior @{format_time(self.savior_left_seconds())} left"
+            if self.savior_left_pct > 0 else "no savior"
+        )
         return (
             f"🎯 Dual: both @{self.limit_cents}¢ ×{self.contracts} when {gate} "
-            f"({cancel}; no Δ / enter-after / skew) "
+            f"({cancel}; {savior}; no Δ / enter-after / skew) "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
 
@@ -147,9 +151,9 @@ class DualSim(BaseSim):
             f"strand_sold_{side.lower()}_{held}@{round(bid * 100)}_at_{format_time(remaining)}_left"
         )
 
-    def _trade_tick(self, state, now, remaining, up_ask, down_ask):
-        super()._trade_tick(state, now, remaining, up_ask, down_ask)
-        if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
-                or state.stop_time_left is not None):
-            return
+    def _position_exits(self, state, now, remaining, up_ask, down_ask):
+        """Optional strand flatten first; shared savior for remaining one-sided holds."""
         self._maybe_strand_exit(state, remaining, up_ask, down_ask)
+        if state.stop_time_left is not None:
+            return
+        super()._position_exits(state, now, remaining, up_ask, down_ask)

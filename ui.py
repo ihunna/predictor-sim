@@ -93,8 +93,15 @@ def _side_line(state, label):
             else:
                 parts.append(f"⏳ {o.contracts} @ {round(o.price * 100)}¢{tag} not filled")
         if state.stop_side == label:
-            parts.append(f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ (stop-loss) at "
+            via = ("savior" if any(n.startswith("savior_sold_") for n in state.notes)
+                   else "strand" if any(n.startswith("strand_sold_") for n in state.notes)
+                   else "time" if any(n.startswith("time_sold_") for n in state.notes)
+                   else "stop-loss")
+            parts.append(f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ ({via}) at "
                          f"{format_time(state.stop_time_left)} left")
+        elif (getattr(state, "savior_cut_cents", None) is not None and state.stop_time_left is None
+              and state.held(label) > 0):
+            parts.append(f"🛟 savior cut {state.savior_cut_cents}¢")
         fill = " + ".join(parts) or "never placed"
     low_at = f" at {format_time(lowest_left)} left" if lowest_left is not None else ""
     return f"   {label:<5} {fill:<34} | low {format_lowest_cents(lowest)}{low_at}"
@@ -427,6 +434,8 @@ class Dashboard:
                 parts.append(chance)
 
             cancel_at = state.window_end - sim.cancel_left_seconds() if sim.cancel_left_pct > 0 else None
+            savior_at = (state.window_end - sim.savior_left_seconds()
+                         if getattr(sim, "savior_left_pct", 0) > 0 else None)
             cards = Table.grid(expand=True, padding=(0, 1))
             cards.add_column(ratio=1)
             cards.add_column(ratio=1)
@@ -469,9 +478,22 @@ class Dashboard:
                                             style="dim")
                             order_lines.append(line)
                 if state.stop_side == label:
+                    via = ("savior" if any(n.startswith("savior_sold_") for n in state.notes)
+                           else "strand" if any(n.startswith("strand_sold_") for n in state.notes)
+                           else "time" if any(n.startswith("time_sold_") for n in state.notes)
+                           else "stop")
                     order_lines.append(Text(
-                        f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ (stop-loss) at "
+                        f"🛑 sold {state.stop_contracts} @ {round(state.stop_price * 100)}¢ ({via}) at "
                         f"{clock(state.stop_time_left)}", style="bold red"))
+                elif (getattr(state, "savior_cut_cents", None) is not None
+                      and state.stop_time_left is None and state.held(label) > 0
+                      and (state.fills_type == f"only_{label.lower()}"
+                           or getattr(state, "bet_side", None) == label)):
+                    order_lines.append(Text(
+                        f"🛟 savior cut {state.savior_cut_cents}¢"
+                        + (f" (arm {datetime.fromtimestamp(savior_at).strftime('%H:%M:%S')})"
+                           if savior_at else ""),
+                        style="bold yellow"))
                 if state.would_stop and state.would_stop[0] == label:
                     side_, n_, bid_, left_ = state.would_stop
                     order_lines.append(Text(
@@ -591,7 +613,9 @@ class Dashboard:
             need = getattr(sim, "require_structure", "mixed") or "any"
             cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
                       if sim.cancel_left_pct > 0 else "no cancel")
-            skip = f"both @{sim.limit_cents}¢ when structure={need} · {cancel}"
+            savior = (f"savior @{format_time(sim.savior_left_seconds())} left"
+                      if getattr(sim, "savior_left_pct", 0) > 0 else "no savior")
+            skip = f"both @{sim.limit_cents}¢ when structure={need} · {cancel} · {savior}"
             skip += _struct_rsi_now()
             if state is not None and state.action:
                 skip += f" · {state.action}"
@@ -604,13 +628,18 @@ class Dashboard:
                       if getattr(sim, "exit_left_seconds", 0) > 0 else "no time exit")
             cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
                       if sim.cancel_left_pct > 0 else "no cancel")
-            skip = f"buy ≤{sim.entry_cents}¢ when structure={need} · {tp} · {time_x} · {stop} · {cancel}"
+            savior = (f"savior @{format_time(sim.savior_left_seconds())} left"
+                      if getattr(sim, "savior_left_pct", 0) > 0 else "no savior")
+            skip = (f"buy ≤{sim.entry_cents}¢ when structure={need} · {tp} · {time_x} · {stop} · "
+                    f"{cancel} · {savior}")
             skip += _struct_rsi_now()
             if state is not None and state.action:
                 skip += f" · {state.action}"
         else:
             skip = f"skip ≥{sim.max_prev_move_pct:.2f}%" if sim.max_prev_move_pct > 0 else "no filter"
             skip += _struct_rsi_now()
+        if getattr(sim, "savior_left_pct", 0) > 0 and sim.strategy in ("against", "leader", "combo", "fav", "regime"):
+            skip += f" · savior @{format_time(sim.savior_left_seconds())} left"
         if sim.strategy == "leader":
             prices = "at ask"
         elif sim.strategy == "scalp":

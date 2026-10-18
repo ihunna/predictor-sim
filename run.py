@@ -532,6 +532,10 @@ def parse_args():
                         help="Cancel unfilled / block new scalp entries when this much of the window is left, "
                              "in percent (default 67 ≈ first third only: ~3:20 left of 5m, ~10:00 of 15m, "
                              "~40:00 of 60m; 0 = never). From 60m scalp replay: late fills rarely hit TP.")
+    parser.add_argument("--savior-left-pct", type=float, default=25.0,
+                        help="On one-sided holds, arm savior when this much of the window is left (default 25: "
+                             "~1:15 of 5m, ~3:45 of 15m, ~15:00 of 60m). Locks a cut once from winner strength "
+                             "(BTC Δ + winner cheapest ask); flatten when bid reaches it. 0 = off. All strategies.")
     parser.add_argument("--capital", type=float, default=100.0,
                         help="Starting balance when there is no trades log yet (default 100).")
     parser.add_argument("--reload-to", type=float, default=None, metavar="DOLLARS",
@@ -615,6 +619,8 @@ def main():
         raise SystemExit(f"--stop-loss-at must be between 0 and {duration * 60 - 1} seconds")
     if not 0 <= args.cancel_left_pct < 100:
         raise SystemExit("--cancel-left-pct must be between 0 and 100")
+    if not 0 <= args.savior_left_pct < 100:
+        raise SystemExit("--savior-left-pct must be between 0 and 100")
 
     updown_file = f"{coin}-{duration}-updown.csv"
     dual_trades_file = f"{coin}-{duration}-predict-dual-trades.csv"
@@ -643,6 +649,7 @@ def main():
 
     sim_args = (coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source)
     common = dict(max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct,
+                  savior_left_pct=args.savior_left_pct,
                   hedge_cents=args.hedge_at, stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,
                   stop_loss_min_cents=args.stop_loss_min,
                   reload_to=args.capital if args.reload_to is None else args.reload_to,

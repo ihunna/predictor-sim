@@ -57,9 +57,13 @@ class ScalpSim(BaseSim):
             f"cancel no-fill @{format_time(self.cancel_left_seconds())} left"
             if self.cancel_left_pct > 0 else "never cancel"
         )
+        savior = (
+            f"savior @{format_time(self.savior_left_seconds())} left"
+            if self.savior_left_pct > 0 else "no savior"
+        )
         return (
             f"🎯 Scalp: buy ask≤{self.entry_cents}¢ ×{self.contracts} when {gate}, "
-            f"{tp}, {time_x}, {stop}, {cancel} "
+            f"{tp}, {time_x}, {stop}, {cancel}, {savior} "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
 
@@ -184,11 +188,8 @@ class ScalpSim(BaseSim):
             f"{self.stop_confirm_seconds}s_at_{format_time(remaining)}_left"
         )
 
-    def _trade_tick(self, state, now, remaining, up_ask, down_ask):
-        super()._trade_tick(state, now, remaining, up_ask, down_ask)
-        if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
-                or state.stop_time_left is not None or state.tp_side):
-            return
+    def _position_exits(self, state, now, remaining, up_ask, down_ask):
+        """TP / hard stop / time exit first; shared savior only if still holding."""
         self._maybe_take_profit(state, remaining, up_ask, down_ask)
         if state.tp_side:
             return
@@ -196,6 +197,9 @@ class ScalpSim(BaseSim):
         if state.stop_time_left is not None:
             return
         self._maybe_time_exit(state, remaining, up_ask, down_ask)
+        if state.stop_time_left is not None:
+            return
+        super()._position_exits(state, now, remaining, up_ask, down_ask)
 
     def orders_text(self, state):
         text = super().orders_text(state)
@@ -203,6 +207,8 @@ class ScalpSim(BaseSim):
             text += f" · TP {state.tp_contracts} @ {round(state.take_profit * 100)}¢"
         elif state.take_profit:
             text += f" · TP {round(state.take_profit * 100)}¢"
+        elif state.savior_cut_cents is not None and state.stop_time_left is None:
+            text += f" · savior cut {state.savior_cut_cents}¢"
         elif state.bet_side and state.held(state.bet_side) > 0:
             text += " · hold"
         return text

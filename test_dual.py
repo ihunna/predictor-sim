@@ -31,7 +31,7 @@ def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=
                    hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds, stop_loss_live=stop_loss_live,
                    stop_loss_min_cents=stop_loss_min_cents, enter_after_seconds=enter_after_seconds,
                    quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents, require_structure=require_structure,
-                   allow_balanced=True, cancel_left_pct=0.0)
+                   allow_balanced=True, cancel_left_pct=0.0, savior_left_pct=0.0)
 
 
 def quiet_sim(tmp, limit=40, place_at=None, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=20,
@@ -42,7 +42,7 @@ def quiet_sim(tmp, limit=40, place_at=None, enter_after_seconds=0, quiet_max_pct
                    hedge_cents=hedge_cents, enter_after_seconds=enter_after_seconds,
                    quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents, pair_cents=pair_cents,
                    strand_exit_seconds=strand_exit_seconds, allow_balanced=allow_balanced,
-                   require_structure=require_structure, cancel_left_pct=0.0)
+                   require_structure=require_structure, cancel_left_pct=0.0, savior_left_pct=0.0)
 
 
 def seed_mixed_moves(sim, window_start, n=24):
@@ -83,14 +83,14 @@ def test_quiet_dual_rest_both(tmp):
 def test_dual_both_30_only_when_mixed(tmp):
     """Default dual: both @30¢ only when structure is mixed."""
     sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
-                  require_structure="mixed", cancel_left_pct=0.0, stop_loss_seconds=0)
+                  require_structure="mixed", cancel_left_pct=0.0, stop_loss_seconds=0, savior_left_pct=0.0)
     seed_up_moves(sim, START)
     state = run_window(sim, [(0, 0.50, 0.51), (60, 0.40, 0.40)], btc=PTB, ptb=PTB)
     assert state.structure == "up"
     assert state.placed_time_left is None
 
     sim2 = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades2.csv"), 100.0, "default",
-                   require_structure="mixed", cancel_left_pct=0.0, stop_loss_seconds=0)
+                   require_structure="mixed", cancel_left_pct=0.0, stop_loss_seconds=0, savior_left_pct=0.0)
     seed_mixed_moves(sim2, START)
     state2 = run_window(sim2, [
         (0, 0.50, 0.51),
@@ -177,12 +177,13 @@ def test_quiet_dual_waits_for_enter_after(tmp):
 
 
 def scalp_sim(tmp, entry=30, target=60, exit_left=0, stop=0, confirm=5, require_structure="",
-              cancel_left_pct=0.0):
-    """Structure gate / cancel off by default so fill/TP tests stay place-on-cheap."""
-    return ScalpSim("btc", 5, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
+              cancel_left_pct=0.0, savior_left_pct=0.0, duration=5):
+    """Structure gate / cancel / savior off by default so fill/TP tests stay place-on-cheap."""
+    return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm,
-                    require_structure=require_structure, cancel_left_pct=cancel_left_pct)
+                    require_structure=require_structure, cancel_left_pct=cancel_left_pct,
+                    savior_left_pct=savior_left_pct)
 
 
 def test_scalp_hold_to_settle(tmp):
@@ -284,6 +285,81 @@ def test_scalp_only_when_mixed(tmp):
     assert state2.action == "scalp"
     assert state2.up_fill_price == 0.25
     assert "structure_mixed" in state2.action_reason
+
+
+def test_savior_scales_with_duration(tmp):
+    """Default 25% left → 1:15 / 3:45 / 15:00 on 5m / 15m / 60m."""
+    s5 = scalp_sim(tmp, savior_left_pct=25.0, duration=5)
+    s15 = scalp_sim(tmp, savior_left_pct=25.0, duration=15)
+    s60 = scalp_sim(tmp, savior_left_pct=25.0, duration=60)
+    assert s5.savior_left_seconds() == 75
+    assert s15.savior_left_seconds() == 225
+    assert s60.savior_left_seconds() == 900
+    assert scalp_sim(tmp, savior_left_pct=0.0).savior_left_seconds() == 0.0
+
+
+def test_savior_favorable_locks_and_exits(tmp):
+    """Winning our side → favorable cut; flatten when bid reaches locked cut."""
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0)
+    # Fill Up @20¢; BTC +0.2% → winner Up; arm at 70s left with up bid 40¢ ≥ cut ~34¢
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.20, 0.81),
+        (100, 0.45, 0.56),
+        (230, 0.55, 0.60),
+    ], btc=PTB * 1.002, ptb=PTB)
+    assert state.savior_cut_cents is not None and state.savior_cut_cents > 20
+    assert state.stop_side == "Up" and state.stop_time_left == 70
+    assert any("savior_sold_up" in n for n in state.notes)
+    assert any("favorable" in n for n in state.notes)
+
+
+def test_savior_adverse_cuts_below_entry(tmp):
+    """Losing side vs BTC → adverse cut ≤ entry; flatten on any bid once armed."""
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.20, 0.81),
+        (100, 0.45, 0.56),
+        (230, 0.55, 0.70),  # up bid 30¢; BTC down → adverse
+    ], btc=PTB * 0.998, ptb=PTB)
+    assert state.savior_cut_cents is not None and state.savior_cut_cents <= 20
+    assert state.stop_side == "Up"
+    assert any("adverse" in n for n in state.notes)
+    assert any("savior_sold_up" in n for n in state.notes)
+
+
+def test_savior_locks_once(tmp):
+    """Cut is locked on first arm tick; later BTC Δ does not rewrite it."""
+    sim = scalp_sim(tmp, target=0, savior_left_pct=25.0)
+    sim.start_window(START, END, f"btc-updown-5m-{START}", "1", now=START)
+    sim.on_tick(START + 20, 0.20, 0.81, btc=PTB * 1.002, ptb=PTB)
+    sim.on_tick(START + 100, 0.45, 0.70, btc=PTB * 1.002, ptb=PTB)  # bid 30¢ — below typical favorable cut
+    sim.on_tick(START + 230, 0.55, 0.70, btc=PTB * 1.002, ptb=PTB)  # arm, lock, bid still 30
+    state = sim.current
+    locked = state.savior_cut_cents
+    assert locked is not None and state.stop_time_left is None
+    # Flip BTC hard against us — cut must stay locked
+    sim.on_tick(START + 240, 0.55, 0.70, btc=PTB * 0.995, ptb=PTB)
+    assert state.savior_cut_cents == locked
+    assert sum(1 for n in state.notes if n.startswith("savior_locked_")) == 1
+    # Bid reaches locked cut → sell
+    other = 1.0 - (locked / 100.0)
+    sim.on_tick(START + 250, 0.55, other, btc=PTB * 0.995, ptb=PTB)
+    state = sim.finish_window()
+    assert state.stop_side == "Up" and any("savior_sold_up" in n for n in state.notes)
+
+
+def test_savior_tp_takes_precedence(tmp):
+    """Take-profit still wins when bid hits TP on/after the arm tick."""
+    sim = scalp_sim(tmp, target=60, savior_left_pct=25.0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+        (230, 0.40, 0.38),  # up bid 62¢ ≥ TP60; also past arm (75s)
+    ], btc=PTB * 1.001, ptb=PTB)
+    assert state.tp_side == "Up" and state.stop_time_left is None
+    assert not any("savior_sold" in n for n in state.notes)
 
 
 def test_both_fill_and_lowest_times(tmp):
@@ -391,7 +467,8 @@ def test_decision_pending_holds_orders(tmp):
 
 def test_cancel_when_nothing_fills(tmp):
     sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
-                  require_structure="", allow_balanced=True, cancel_left_pct=40.0, stop_loss_seconds=0)
+                  require_structure="", allow_balanced=True, cancel_left_pct=40.0, stop_loss_seconds=0,
+                  savior_left_pct=0.0)
     assert sim.cancel_left_seconds() == 120
     state = sim.start_window(START, END, f"btc-updown-5m-{START}", "1", now=START)
     sim.on_tick(START + 1, 0.50, 0.51)
@@ -411,7 +488,7 @@ def test_cancel_when_nothing_fills(tmp):
     sim.finish_window()
 
     sim15 = DualSim("btc", 15, 30, 8, None, os.path.join(tmp, "t15.csv"), 100, "test",
-                    require_structure="", cancel_left_pct=40.0)
+                    require_structure="", cancel_left_pct=40.0, savior_left_pct=0.0)
     assert sim15.cancel_left_seconds() == 360
 
 
@@ -532,7 +609,8 @@ def test_stop_checkpoints(tmp):
 
 
 def test_reload_when_balance_too_low(tmp):
-    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 3.0, "log", reload_to=100.0)
+    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 3.0, "log", reload_to=100.0,
+                  savior_left_pct=0.0)
     state = sim.start_window(START, END, "s", "1", now=START)
     assert state.reload == 97.0 and sim.capital == 100.0 and sim.reloaded_total == 97.0
     row = sim.settle(sim.finish_window(), "Up", 1, 2, None)
@@ -545,7 +623,7 @@ def test_reload_when_balance_too_low(tmp):
     sim.settle(sim.finish_window(), "Up", 1, 2, None)
     assert last_reloaded_total(os.path.join(tmp, "trades.csv")) == 97.0
     # off by default
-    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "t2.csv"), -1.0, "log")
+    sim = DualSim("btc", 5, 30, 8, None, os.path.join(tmp, "t2.csv"), -1.0, "log", savior_left_pct=0.0)
     assert sim.start_window(START, END, "s", "1", now=START).reload == 0.0 and sim.capital == -1.0
 
 
@@ -733,6 +811,7 @@ def test_book_and_slugs():
 
 
 def combo_sim(tmp, strategy, **kwargs):
+    kwargs.setdefault("savior_left_pct", 0.0)
     return ComboSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default", strategy=strategy,
                     **kwargs)
 
@@ -811,6 +890,7 @@ def test_against_strategy(tmp):
 
 def against_sim(tmp, **kwargs):
     kwargs.setdefault("min_move_vs_avg", 0)
+    kwargs.setdefault("savior_left_pct", 0.0)
     return AgainstSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default", **kwargs)
 
 
@@ -1141,7 +1221,7 @@ LEADER_TICKS = [(0, 0.50, 0.51), (30, 0.55, 0.46), (70, 0.62, 0.39), (100, 0.51,
 def leader_sim(tmp):
     # stop-loss and cancel are on for the dual; the leader strategy ignores them
     return LeaderSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
-                     stop_loss_seconds=20, stop_loss_live=True)
+                     stop_loss_seconds=20, stop_loss_live=True, savior_left_pct=0.0)
 
 
 def test_leader_bought_at_ask(tmp):
@@ -1205,6 +1285,12 @@ def main():
             test_scalp_ignores_brief_wick,
             test_scalp_confirmed_stop,
             test_scalp_time_exit,
+            test_scalp_only_when_mixed,
+            test_savior_scales_with_duration,
+            test_savior_favorable_locks_and_exits,
+            test_savior_adverse_cuts_below_entry,
+            test_savior_locks_once,
+            test_savior_tp_takes_precedence,
             test_joined_late_not_traded,
             test_no_ptb_not_traded_even_on_time,
             test_prev_move_filter,

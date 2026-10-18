@@ -60,13 +60,18 @@ class AgainstSim(ComboSim):
             f"🎯 Against [{self.against_filter}]: at exactly {self.against_min_streak} same winners in a row "
             f"{gate}{vs_avg}, buy {self.contracts} of the other side (≤{self.against_max_cents}¢); "
             f"{skip} → skip; a streak that keeps going is not bet again until it breaks; "
-            f"{self._take_profit_text()} | {capital}"
+            f"{self._take_profit_text()}; {self._savior_text()} | {capital}"
         )
 
     def _take_profit_text(self):
         if self.take_profit_cents <= 0 or not self.take_profit_all:
             return "no take-profit, held to the end"
         return f"take-profit: sell all at {self.take_profit_cents}¢, else held to the end"
+
+    def _savior_text(self):
+        if self.savior_left_pct <= 0:
+            return "no savior"
+        return f"savior @{format_time(self.savior_left_seconds())} left"
 
     def regime_decision(self, window_start, prev_outcome=None, prev_move_pct=None):
         """("against" | "skip", reason), and sets the side and the take-profit on the current state."""
@@ -180,9 +185,12 @@ class AgainstSim(ComboSim):
         state.streak_before = f"{streak[0]} {streak[1]}" if streak else "unknown"
         return state
 
-    def _trade_tick(self, state, now, remaining, up_ask, down_ask):
-        super()._trade_tick(state, now, remaining, up_ask, down_ask)
+    def _position_exits(self, state, now, remaining, up_ask, down_ask):
+        """Take-profit first; shared savior only if still holding one side."""
         self._maybe_take_profit(state, remaining, up_ask, down_ask)
+        if state.tp_side:
+            return
+        super()._position_exits(state, now, remaining, up_ask, down_ask)
 
     def _maybe_take_profit(self, state, remaining, up_ask, down_ask):
         """Sells the whole position at the take-profit price once our side's bid (1 - the other side's ask) reaches
@@ -204,4 +212,6 @@ class AgainstSim(ComboSim):
             text += f" · sold {state.tp_contracts} @ {round(state.take_profit * 100)}¢ (take-profit)"
         elif state.take_profit:
             text += f" · take-profit at {round(state.take_profit * 100)}¢"
+        elif state.savior_cut_cents is not None and state.stop_time_left is None:
+            text += f" · savior cut {state.savior_cut_cents}¢"
         return text
