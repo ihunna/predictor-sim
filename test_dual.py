@@ -178,14 +178,14 @@ def test_quiet_dual_waits_for_enter_after(tmp):
 
 def scalp_sim(tmp, entry=30, target=60, exit_left=0, stop=0, confirm=5, require_structure="",
               cancel_left_pct=0.0, savior_left_pct=0.0, savior_force_left_pct=20.0,
-              savior_stall_pct=10.0, duration=5):
-    """Structure gate / cancel / savior off by default so fill/TP tests stay place-on-cheap."""
+              savior_stall_pct=10.0, duration=5, rsi_zone=None):
+    """Structure gate / cancel / savior / RSI zone off by default so fill/TP tests stay place-on-cheap."""
     return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm,
                     require_structure=require_structure, cancel_left_pct=cancel_left_pct,
                     savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
-                    savior_stall_pct=savior_stall_pct)
+                    savior_stall_pct=savior_stall_pct, rsi_zone=rsi_zone)
 
 
 def test_scalp_hold_to_settle(tmp):
@@ -289,8 +289,35 @@ def test_scalp_only_when_mixed(tmp):
     assert "structure_mixed" in state2.action_reason
 
 
+def test_scalp_rsi_zone(tmp):
+    """Optional --rsi-zone: skip when RSI outside band or unknown; allow when inside."""
+    # No moves → RSI unknown → skip when zone set
+    sim = scalp_sim(tmp, rsi_zone=(70, 100))
+    state = run_window(sim, [(0, 0.50, 0.51), (20, 0.25, 0.76)], btc=PTB, ptb=PTB)
+    assert state.rsi is None and state.placed_time_left is None
+
+    # All-up moves → RSI 100 → enter
+    sim2 = scalp_sim(tmp, rsi_zone=(70, 100))
+    seed_up_moves(sim2, START)
+    state2 = run_window(sim2, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+        (60, 0.40, 0.38),
+    ], btc=PTB, ptb=PTB)
+    assert state2.rsi is not None and state2.rsi >= 70
+    assert state2.action == "scalp" and state2.up_fill_price == 0.25
+    assert "rsi_" in state2.action_reason
+
+    # Mixed → mid RSI → skip 70–100
+    sim3 = scalp_sim(tmp, rsi_zone=(70, 100))
+    seed_mixed_moves(sim3, START, n=24)
+    state3 = run_window(sim3, [(0, 0.50, 0.51), (20, 0.25, 0.76)], btc=PTB, ptb=PTB)
+    assert state3.rsi is not None and state3.rsi < 70
+    assert state3.placed_time_left is None
+
+
 def test_savior_scales_with_duration(tmp):
-    """Default 50% arm / 10% stall / 20% force → 2:30+0:30+1:00 / 7:30+1:30+3:00 / 30:00+6:00+12:00."""
+    """50% arm / 10% stall / 20% force → 2:30+0:30+1:00 / 7:30+1:30+3:00 / 30:00+6:00+12:00."""
     s5 = scalp_sim(tmp, savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0, duration=5)
     s15 = scalp_sim(tmp, savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0, duration=15)
     s60 = scalp_sim(tmp, savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0, duration=60)

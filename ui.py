@@ -645,6 +645,8 @@ class Dashboard:
                 skip += f" · {state.action}"
         elif sim.strategy == "scalp":
             need = getattr(sim, "require_structure", "") or "any"
+            zone = getattr(sim, "rsi_zone", None)
+            rsi_gate = (f"RSI {zone[0]:g}–{zone[1]:g}" if zone else "any RSI")
             tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
             stop = (f"stop ≤{sim.stop_cents}¢×{sim.stop_confirm_seconds}s"
                     if getattr(sim, "stop_cents", 0) > 0 else "no stop")
@@ -654,8 +656,8 @@ class Dashboard:
                       if sim.cancel_left_pct > 0 else "no cancel")
             savior = (sim.savior_summary_text() if hasattr(sim, "savior_summary_text")
                       else "no savior")
-            skip = (f"buy ≤{sim.entry_cents}¢ when structure={need} · {tp} · {time_x} · {stop} · "
-                    f"{cancel} · {savior}")
+            skip = (f"buy ≤{sim.entry_cents}¢ when structure={need} · {rsi_gate} · {tp} · "
+                    f"{time_x} · {stop} · {cancel} · {savior}")
             skip += _struct_rsi_now()
             if state is not None and state.action:
                 skip += f" · {state.action}"

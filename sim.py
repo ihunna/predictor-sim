@@ -523,7 +523,7 @@ class BaseSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.0, cancel_left_pct=67.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14,
-                 savior_left_pct=50.0, savior_force_left_pct=20.0, savior_stall_pct=10.0):
+                 savior_left_pct=0.0, savior_force_left_pct=20.0, savior_stall_pct=10.0):
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live

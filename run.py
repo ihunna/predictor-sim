@@ -525,8 +525,7 @@ def parse_args():
                              "rests both when structure is mixed).")
     parser.add_argument("--dual-structure", default="", metavar="NAME",
                         help="Dual and scalp: only trade when PriceStructure equals this "
-                             "(default empty = any / ungated to gather data; set mixed|up|down to gate). "
-                             "RSI is always logged/shown, never gated.")
+                             "(default empty = any / ungated to gather data; set mixed|up|down to gate).")
 
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 30; 5m replay).")
@@ -540,6 +539,9 @@ def parse_args():
                              "(default 0 = off).")
     parser.add_argument("--scalp-stop-confirm", type=int, default=5, metavar="SECONDS",
                         help="Scalp: bid must stay ≤ stop this long before stopping (default 5; filters wicks).")
+    parser.add_argument("--rsi-zone", default="", metavar="LO-HI",
+                        help="Scalp only: enter only when RSI is in this inclusive band, e.g. 70-100. "
+                             "Empty (default) = off. Unknown RSI skips when set.")
 
     parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
@@ -557,19 +559,17 @@ def parse_args():
                         help="Cancel unfilled / block new scalp entries when this much of the window is left, "
                              "in percent (default 67 ≈ first third only: ~3:20 left of 5m, ~10:00 of 15m, "
                              "~40:00 of 60m; 0 = never). From 60m scalp replay: late fills rarely hit TP.")
-    parser.add_argument("--savior-left-pct", type=float, default=50.0,
-                        help="On one-sided holds, arm savior when this much of the window is left (default 50: "
-                             "~2:30 of 5m, ~7:30 of 15m, ~30:00 of 60m). Locks a cut once from winner strength. "
-                             "Profit cut: sell when bid ≥ cut. Otherwise watch for progress (new high bid); "
+    parser.add_argument("--savior-left-pct", type=float, default=0.0,
+                        help="On one-sided holds, arm savior when this much of the window is left "
+                             "(default 0 = off). E.g. 50 ≈ half window left. Locks a cut from winner strength; "
                              "stall-sell after --savior-stall-pct with no progress, or force at "
-                             "--savior-force-left-pct. 0 = off. All strategies.")
+                             "--savior-force-left-pct. All strategies.")
     parser.add_argument("--savior-stall-pct", type=float, default=10.0,
                         help="After arm, seconds of no new high bid before stall-sell, as %% of window "
-                             "(default 10: ~0:30 of 5m, ~1:30 of 15m, ~6:00 of 60m). Gives room instead of "
-                             "instant recover-at-entry. 0 = never stall (force only). Ignored if savior off.")
+                             "(default 10). 0 = never stall (force only). Ignored if savior off.")
     parser.add_argument("--savior-force-left-pct", type=float, default=20.0,
                         help="Force flatten when this much of the window is left if still holding "
-                             "(default 20: ~1:00 of 5m, ~3:00 of 15m, ~12:00 of 60m). Ignored if savior off.")
+                             "(default 20). Ignored if savior off.")
     parser.add_argument("--capital", type=float, default=100.0,
                         help="Starting balance when there is no trades log yet (default 100).")
     parser.add_argument("--reload-to", type=float, default=None, metavar="DOLLARS",
@@ -660,6 +660,21 @@ def main():
         raise SystemExit("--scalp-entry must be between 1 and 99")
     if args.scalp_target != 0 and not args.scalp_entry < args.scalp_target <= 99:
         raise SystemExit("--scalp-target must be 0 (hold) or > --scalp-entry and ≤99")
+    rsi_zone = None
+    if (args.rsi_zone or "").strip():
+        raw = args.rsi_zone.strip().replace(":", "-").replace("–", "-").replace("—", "-")
+        parts = [p.strip() for p in raw.split("-") if p.strip()]
+        if len(parts) != 2:
+            raise SystemExit("--rsi-zone must look like 70-100 (LO-HI)")
+        try:
+            lo, hi = float(parts[0]), float(parts[1])
+        except ValueError:
+            raise SystemExit("--rsi-zone must look like 70-100 (LO-HI)")
+        if not (0 <= lo <= hi <= 100):
+            raise SystemExit("--rsi-zone bounds must satisfy 0 ≤ LO ≤ HI ≤ 100")
+        rsi_zone = (lo, hi)
+        if strategy != "scalp":
+            raise SystemExit("--rsi-zone is scalp-only")
     if args.scalp_exit_left < 0 or args.scalp_exit_left >= duration * 60:
         raise SystemExit(f"--scalp-exit-left must be between 0 and {duration * 60 - 1}")
     if not 0 <= args.scalp_stop < args.scalp_entry:
@@ -734,7 +749,7 @@ def main():
         sim = ScalpSim(*sim_args, **scalp_common, entry_cents=args.scalp_entry,
                        target_cents=args.scalp_target, exit_left_seconds=args.scalp_exit_left,
                        stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm,
-                       require_structure=args.dual_structure)
+                       require_structure=args.dual_structure, rsi_zone=rsi_zone)
     elif strategy == "against":
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,
