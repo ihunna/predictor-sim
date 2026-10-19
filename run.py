@@ -25,6 +25,7 @@ from predict_feed import (
     get_market_metadata_for_slug,
     http_proxy_url,
     load_dotenv,
+    proxy_ws_enabled,
     set_http_proxy,
     window_bounds,
 )
@@ -574,8 +575,12 @@ def parse_args():
     parser.add_argument("--feed-id", type=int, default=None,
                         help="Chainlink feed id for the coin (default from the built-in map: btc 1, eth 2, bnb 3).")
     parser.add_argument("--proxy", default=None, metavar="URL",
-                        help="HTTP(S) proxy for Predict GraphQL, market HTML, and the WS "
-                             "(e.g. http://user:pass@host:8080). Overrides .env PROXY_POOL / PREDICT_HTTP_PROXY.")
+                        help="HTTP(S) proxy for Predict GraphQL + market HTML only "
+                             "(e.g. http://user:pass@host:8080). WS stays direct. "
+                             "Overrides .env PROXY_POOL / PREDICT_HTTP_PROXY.")
+    parser.add_argument("--proxy-ws", action="store_true",
+                        help="Also route the Predict WebSocket through --proxy / PROXY_POOL "
+                             "(slower; off by default). Or set PREDICT_PROXY_WS=1.")
     parser.add_argument("--plain", action="store_true",
                         help="Plain line output instead of the live dashboard (for nohup / log files).")
     return parser.parse_args()
@@ -585,16 +590,17 @@ def main():
     args = parse_args()
     env_path = load_dotenv()
     if args.proxy:
-        set_http_proxy(args.proxy)
+        set_http_proxy(args.proxy, proxy_ws=args.proxy_ws)
     else:
-        configure_proxy_from_env()
+        configure_proxy_from_env(proxy_ws=args.proxy_ws or None)
     if http_proxy_url():
         # Host only in the banner — avoid printing credentials.
         from urllib.parse import urlparse
         p = urlparse(http_proxy_url())
         where = f" (from {env_path})" if env_path and not args.proxy else ""
-        print(f"Predict proxy: {p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "") + where,
-              flush=True)
+        ws_note = " · WS via proxy" if proxy_ws_enabled() else " · WS direct"
+        print(f"Predict proxy: {p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "")
+              + where + ws_note, flush=True)
     elif env_path:
         print(f"Loaded {env_path} but no PROXY_POOL / PREDICT_HTTP_PROXY set "
               f"(use PROXY_POOL=http://user:pass@host:port, uncommented).", flush=True)

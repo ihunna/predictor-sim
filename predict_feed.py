@@ -41,9 +41,10 @@ GRAPHQL_HEADERS = {
     "sec-fetch-site": "same-site",
 }
 
-# Optional HTTP(S) proxy for GraphQL / HTML scrape / WS (Cloudflare often blocks VPS IPs).
+# Optional HTTP(S) proxy for GraphQL + HTML scrape only (Cloudflare often blocks VPS IPs).
+# WebSocket stays direct by default — proxying it adds latency to the live book.
 _http_proxies = None  # {"http": url, "https": url} for requests
-_ws_proxy_kwargs = {}  # kwargs for WebSocketApp.run_forever
+_ws_proxy_kwargs = {}  # kwargs for WebSocketApp.run_forever (only if proxy_ws=True)
 
 SUPPORTED_DURATIONS = (5, 15, 60)
 COIN_FULL_NAMES = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "bnb": "bnb"}
@@ -111,28 +112,30 @@ def http_proxy_url():
     return _http_proxies.get("https") or _http_proxies.get("http")
 
 
-def set_http_proxy(url):
-    """Route Predict HTTP + WebSocket through ``url`` (e.g. http://user:pass@host:port).
+def set_http_proxy(url, proxy_ws=False):
+    """Route Predict GraphQL + market HTML through ``url`` (e.g. http://user:pass@host:port).
 
-    Pass None/\"\" to clear. Also used for HTML market scrape. SOCKS needs a socks:// URL
-    and ``requests[socks]`` / PySocks installed."""
+    The live WebSocket stays **direct** unless ``proxy_ws=True`` (proxying WS is usually
+    slower and not needed — CF mainly blocks GraphQL). Pass None/\"\" to clear.
+    SOCKS needs a socks:// URL and ``requests[socks]`` / PySocks installed."""
     global _http_proxies, _ws_proxy_kwargs
     url = (url or "").strip()
     if not url:
         _http_proxies = None
         _ws_proxy_kwargs = {}
         return
-    _http_proxies = {"http": url, "https": url}
     parsed = urlparse(url)
     if not parsed.hostname:
         raise ValueError(f"invalid proxy URL (no host): {url!r}")
+    _http_proxies = {"http": url, "https": url}
+    _ws_proxy_kwargs = {}
+    if not proxy_ws:
+        return
     scheme = (parsed.scheme or "http").lower()
     port = parsed.port
     if port is None:
         port = 443 if scheme in ("https", "socks5h", "socks5", "socks4") else 80
-    proxy_type = "http"
-    if scheme.startswith("socks"):
-        proxy_type = "socks"
+    proxy_type = "socks" if scheme.startswith("socks") else "http"
     kwargs = {
         "http_proxy_host": parsed.hostname,
         "http_proxy_port": port,
@@ -144,6 +147,11 @@ def set_http_proxy(url):
             unquote(parsed.password) if parsed.password is not None else "",
         )
     _ws_proxy_kwargs = kwargs
+
+
+def proxy_ws_enabled():
+    """True when the live socket is also routed through the HTTP proxy."""
+    return bool(_ws_proxy_kwargs)
 
 
 def load_dotenv(path=None):
@@ -199,25 +207,33 @@ def proxy_pool_urls(raw=None):
     return parts
 
 
-def configure_proxy_from_env():
+def _env_flag(name):
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def configure_proxy_from_env(proxy_ws=None):
     """Pick a proxy from env (first match wins):
 
     1. ``PREDICT_HTTP_PROXY`` — bot-specific override
     2. ``PROXY_POOL`` — first URL in the pool (from ``.env``)
     3. ``HTTPS_PROXY`` / ``HTTP_PROXY`` (and lowercase variants)
+
+    WebSocket stays direct unless ``proxy_ws=True`` or ``PREDICT_PROXY_WS=1``.
     """
+    if proxy_ws is None:
+        proxy_ws = _env_flag("PREDICT_PROXY_WS")
     val = (os.environ.get("PREDICT_HTTP_PROXY") or "").strip()
     if val:
-        set_http_proxy(val)
+        set_http_proxy(val, proxy_ws=proxy_ws)
         return http_proxy_url()
     pool = proxy_pool_urls()
     if pool:
-        set_http_proxy(pool[0])
+        set_http_proxy(pool[0], proxy_ws=proxy_ws)
         return http_proxy_url()
     for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
         val = (os.environ.get(key) or "").strip()
         if val:
-            set_http_proxy(val)
+            set_http_proxy(val, proxy_ws=proxy_ws)
             return http_proxy_url()
     return None
 
