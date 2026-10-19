@@ -5,8 +5,12 @@ Usage:
     python run.py --coin btc -d 5                # live dashboard (needs a terminal; use tmux/screen on a server)
     python run.py --coin btc -d 5 --plain        # plain lines, for nohup / log files
     python run.py --coin eth -d 15 --limit 30 --contracts 8 --max-prev-move-pct 0.10 --capital-last 112.40
+
+Requires PREDICT_API_KEY in .env (from https://developers.predict.fun).
+Rate limit: 240 requests/minute. WebSocket is direct.
 """
 import argparse
+import os
 import socket
 import threading
 import time
@@ -15,18 +19,19 @@ from logs import format_lowest_cents, format_time, log_to_csv
 from sim import last_capital_after, last_reloaded_total
 from strategies import AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES
 from predict_feed import (
+    API_RATE_PER_MINUTE,
     CHAINLINK_FEED_IDS,
     SUPPORTED_DURATIONS,
     PredictWS,
-    configure_proxy_from_env,
+    api_base_url,
+    api_configured,
+    configure_api_from_env,
     fetch_market,
     get_current_active_slug,
     get_last_lookup_error,
     get_market_metadata_for_slug,
-    http_proxy_url,
     load_dotenv,
-    proxy_ws_enabled,
-    set_http_proxy,
+    set_api_key,
     window_bounds,
 )
 from ui import Dashboard, PlainUI, hhmm, stamp
@@ -574,13 +579,11 @@ def parse_args():
                         help="Restore the starting balance (overrides the last capital_after in the log).")
     parser.add_argument("--feed-id", type=int, default=None,
                         help="Chainlink feed id for the coin (default from the built-in map: btc 1, eth 2, bnb 3).")
-    parser.add_argument("--proxy", default=None, metavar="URL",
-                        help="HTTP(S) proxy for Predict GraphQL + market HTML only "
-                             "(e.g. http://user:pass@host:8080). WS stays direct. "
-                             "Overrides .env PROXY_POOL / PREDICT_HTTP_PROXY.")
-    parser.add_argument("--proxy-ws", action="store_true",
-                        help="Also route the Predict WebSocket through --proxy / PROXY_POOL "
-                             "(slower; off by default). Or set PREDICT_PROXY_WS=1.")
+    parser.add_argument("--api-key", default=None, metavar="KEY",
+                        help="Predict official REST API key (x-api-key). Overrides .env PREDICT_API_KEY. "
+                             "Get one at https://developers.predict.fun.")
+    parser.add_argument("--api-testnet", action="store_true",
+                        help="Use https://api-testnet.predict.fun (no API key required).")
     parser.add_argument("--plain", action="store_true",
                         help="Plain line output instead of the live dashboard (for nohup / log files).")
     return parser.parse_args()
@@ -588,22 +591,20 @@ def parse_args():
 
 def main():
     args = parse_args()
-    env_path = load_dotenv()
-    if args.proxy:
-        set_http_proxy(args.proxy, proxy_ws=args.proxy_ws)
+    load_dotenv()
+    if args.api_key is not None or args.api_testnet:
+        key = args.api_key
+        if key is None:
+            key = os.environ.get("PREDICT_API_KEY") or os.environ.get("API_KEY")
+        set_api_key(key, testnet=args.api_testnet)
     else:
-        configure_proxy_from_env(proxy_ws=args.proxy_ws or None)
-    if http_proxy_url():
-        # Host only in the banner — avoid printing credentials.
-        from urllib.parse import urlparse
-        p = urlparse(http_proxy_url())
-        where = f" (from {env_path})" if env_path and not args.proxy else ""
-        ws_note = " · WS via proxy" if proxy_ws_enabled() else " · WS direct"
-        print(f"Predict proxy: {p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "")
-              + where + ws_note, flush=True)
-    elif env_path:
-        print(f"Loaded {env_path} but no PROXY_POOL / PREDICT_HTTP_PROXY set "
-              f"(use PROXY_POOL=http://user:pass@host:port, uncommented).", flush=True)
+        configure_api_from_env()
+    if not api_configured():
+        raise SystemExit(
+            "PREDICT_API_KEY required (set in .env or pass --api-key). "
+            "Get one at https://developers.predict.fun — or use --api-testnet."
+        )
+    print(f"Predict API: {api_base_url()} · ≤{API_RATE_PER_MINUTE}/min · WS direct", flush=True)
     coin = args.coin.strip().lower()
     duration = args.duration
     feed_id = args.feed_id or CHAINLINK_FEED_IDS.get(coin)
