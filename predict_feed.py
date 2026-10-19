@@ -1,13 +1,19 @@
 """Predict.fun data: GraphQL lookups (market per window, result, Chainlink bars) and one live WebSocket
-(order book asks + Chainlink price). No API key; the site's endpoints only need its Origin header."""
+(order book asks + Chainlink price). No API key; the site's endpoints only need its Origin header.
+
+GraphQL is often Cloudflare-blocked from datacenter IPs; market id is then scraped from the
+public ``/market/{slug}`` HTML so windows can still open while WS books keep working."""
 import calendar
 import json
+import os
+import re
 import sys
 import threading
 import time
 import zoneinfo
 from collections import deque
 from datetime import datetime
+from urllib.parse import unquote, unquote_plus, urlparse
 
 import requests
 import websocket
@@ -16,16 +22,28 @@ GRAPHQL_URL = "https://graphql.predict.fun/graphql"
 WS_URL = "wss://ws.predict.fun/ws"
 ORIGIN = "https://predict.fun"
 USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36"
 )
 GRAPHQL_HEADERS = {
     "origin": ORIGIN,
     "referer": ORIGIN + "/",
     "content-type": "application/json",
     "accept": "application/graphql-response+json, application/json",
+    "accept-language": "en-US,en;q=0.9",
+    "x-accept-language": "en",
     "user-agent": USER_AGENT,
+    "sec-ch-ua": '"Google Chrome";v="153", "Not_A Brand";v="8", "Chromium";v="153"',
+    "sec-ch-ua-mobile": "?1",
+    "sec-ch-ua-platform": '"Android"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
 }
+
+# Optional HTTP(S) proxy for GraphQL / HTML scrape / WS (Cloudflare often blocks VPS IPs).
+_http_proxies = None  # {"http": url, "https": url} for requests
+_ws_proxy_kwargs = {}  # kwargs for WebSocketApp.run_forever
 
 SUPPORTED_DURATIONS = (5, 15, 60)
 COIN_FULL_NAMES = {"btc": "bitcoin", "eth": "ethereum", "sol": "solana", "bnb": "bnb"}
@@ -76,8 +94,137 @@ def get_current_active_slug(coin, duration, at=None):
 
 # --- GraphQL ---
 
+# Last GraphQL / slug-lookup failure reason (for UI). Cleared on success.
+last_graphql_error = None
+last_lookup_error = None
+
+
+def get_last_lookup_error():
+    """Current slug-lookup failure text, or None if the miss was 'not listed yet'."""
+    return last_lookup_error
+
+
+def http_proxy_url():
+    """Currently configured proxy URL, or None."""
+    if not _http_proxies:
+        return None
+    return _http_proxies.get("https") or _http_proxies.get("http")
+
+
+def set_http_proxy(url):
+    """Route Predict HTTP + WebSocket through ``url`` (e.g. http://user:pass@host:port).
+
+    Pass None/\"\" to clear. Also used for HTML market scrape. SOCKS needs a socks:// URL
+    and ``requests[socks]`` / PySocks installed."""
+    global _http_proxies, _ws_proxy_kwargs
+    url = (url or "").strip()
+    if not url:
+        _http_proxies = None
+        _ws_proxy_kwargs = {}
+        return
+    _http_proxies = {"http": url, "https": url}
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise ValueError(f"invalid proxy URL (no host): {url!r}")
+    scheme = (parsed.scheme or "http").lower()
+    port = parsed.port
+    if port is None:
+        port = 443 if scheme in ("https", "socks5h", "socks5", "socks4") else 80
+    proxy_type = "http"
+    if scheme.startswith("socks"):
+        proxy_type = "socks"
+    kwargs = {
+        "http_proxy_host": parsed.hostname,
+        "http_proxy_port": port,
+        "proxy_type": proxy_type,
+    }
+    if parsed.username is not None:
+        kwargs["http_proxy_auth"] = (
+            unquote(parsed.username),
+            unquote(parsed.password) if parsed.password is not None else "",
+        )
+    _ws_proxy_kwargs = kwargs
+
+
+def load_dotenv(path=None):
+    """Load KEY=VALUE lines from a ``.env`` into ``os.environ`` (does not override existing).
+
+    Looks for ``.env`` next to this file, then in the process cwd. Ignores blank/# lines.
+    Values may be quoted; ``PROXY_POOL`` may be one URL or a comma/whitespace-separated list."""
+    candidates = []
+    if path:
+        candidates.append(path)
+    else:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.join(here, ".env"))
+        candidates.append(os.path.join(os.getcwd(), ".env"))
+    loaded = None
+    for candidate in candidates:
+        if not candidate or not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    if not key or key in os.environ:
+                        continue
+                    val = val.strip()
+                    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                        val = val[1:-1]
+                    os.environ[key] = val
+            loaded = candidate
+            break
+        except OSError:
+            continue
+    return loaded
+
+
+def proxy_pool_urls(raw=None):
+    """Split a PROXY_POOL value into URL strings (comma / whitespace / newline separated)."""
+    text = (raw if raw is not None else os.environ.get("PROXY_POOL", "")).strip()
+    if not text:
+        return []
+    parts = []
+    for chunk in re.split(r"[\s,;]+", text):
+        chunk = chunk.strip().strip("'\"")
+        if chunk and ("://" in chunk or chunk.startswith("socks")):
+            parts.append(chunk)
+        elif chunk and "." in chunk and ":" in chunk and "://" not in chunk:
+            # host:port → assume http
+            parts.append("http://" + chunk)
+    return parts
+
+
+def configure_proxy_from_env():
+    """Pick a proxy from env (first match wins):
+
+    1. ``PREDICT_HTTP_PROXY`` — bot-specific override
+    2. ``PROXY_POOL`` — first URL in the pool (from ``.env``)
+    3. ``HTTPS_PROXY`` / ``HTTP_PROXY`` (and lowercase variants)
+    """
+    val = (os.environ.get("PREDICT_HTTP_PROXY") or "").strip()
+    if val:
+        set_http_proxy(val)
+        return http_proxy_url()
+    pool = proxy_pool_urls()
+    if pool:
+        set_http_proxy(pool[0])
+        return http_proxy_url()
+    for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            set_http_proxy(val)
+            return http_proxy_url()
+    return None
+
+
 def graphql(query, variables=None, timeout=5, operation=None):
-    """Returns the ``data`` dict, or None on any failure."""
+    """Returns the ``data`` dict, or None on any failure. Sets ``last_graphql_error``."""
+    global last_graphql_error
     payload = {"query": query, "variables": variables or {}}
     if operation:
         payload["operationName"] = operation
@@ -87,14 +234,23 @@ def graphql(query, variables=None, timeout=5, operation=None):
             json=payload,
             headers=GRAPHQL_HEADERS,
             timeout=timeout,
+            proxies=_http_proxies,
         )
         if resp.status_code != 200:
+            body = (resp.text or "")[:80].lower()
+            if resp.status_code == 403 or "cloudflare" in body or "attention required" in body:
+                last_graphql_error = f"GraphQL HTTP {resp.status_code} (Cloudflare blocked)"
+            else:
+                last_graphql_error = f"GraphQL HTTP {resp.status_code}"
             return None
         body = resp.json()
         if body.get("errors"):
+            last_graphql_error = f"GraphQL errors: {body['errors'][0].get('message', body['errors'][0])}"
             return None
+        last_graphql_error = None
         return body.get("data")
-    except Exception:
+    except Exception as e:
+        last_graphql_error = f"GraphQL {type(e).__name__}: {e}"
         return None
 
 
@@ -121,25 +277,86 @@ MARKET_QUERY = """query GetMarket($marketId: ID!) {
 }"""
 
 _market_cache = {}
+MARKET_PAGE = ORIGIN + "/market/{slug}"
+
+
+def _parse_market_page(html, slug):
+    """Extract (market_id, category_id, title) from predict.fun market HTML, or None."""
+    if not html:
+        return None
+    ids = re.findall(r"marketId=(\d+)", html)
+    if not ids:
+        ids = re.findall(r'"id"\s*:\s*"(\d{5,})"', html)
+    if not ids:
+        return None
+    market_id = ids[0]
+    title = slug
+    m = re.search(r"titleOverride=([^&\"']+)", html)
+    if m:
+        title = unquote_plus(m.group(1).replace("+", " "))
+    else:
+        m = re.search(r"<title>([^<|]+)", html, re.I)
+        if m:
+            title = m.group(1).strip()
+    return market_id, None, title
+
+
+def scrape_market_metadata_for_slug(slug, timeout=8):
+    """Public HTML fallback when GraphQL is blocked. Returns (id, category_id, title) or Nones."""
+    try:
+        resp = requests.get(
+            MARKET_PAGE.format(slug=slug),
+            headers={"user-agent": USER_AGENT, "accept": "text/html", "origin": ORIGIN, "referer": ORIGIN + "/"},
+            timeout=timeout,
+            proxies=_http_proxies,
+        )
+    except Exception as e:
+        return None, None, None, f"HTML scrape {type(e).__name__}: {e}"
+    if resp.status_code == 404:
+        return None, None, None, None  # genuinely not listed yet
+    if resp.status_code != 200:
+        return None, None, None, f"HTML scrape HTTP {resp.status_code}"
+    parsed = _parse_market_page(resp.text, slug)
+    if not parsed:
+        return None, None, None, "HTML scrape: no marketId on page"
+    return (*parsed, None)
 
 
 def get_market_metadata_for_slug(slug):
-    """Fetches (market_id, category_id, title) for a window slug; (None, None, None) if not listed."""
+    """Fetches (market_id, category_id, title) for a window slug; (None, None, None) if not listed.
+
+    Tries GraphQL first; on failure scrapes ``/market/{slug}`` (Cloudflare often blocks GraphQL
+    from VPS IPs while the public market page still works)."""
+    global last_lookup_error
     if slug in _market_cache:
+        last_lookup_error = None
         return _market_cache[slug]
 
     data = graphql(CATEGORY_QUERY, {"categoryId": slug})
     category = (data or {}).get("category")
-    if not category:
-        return None, None, None
-    edges = (category.get("markets") or {}).get("edges") or []
-    if not edges:
-        return None, None, None
+    if category:
+        edges = (category.get("markets") or {}).get("edges") or []
+        if edges:
+            market_id = str(edges[0]["node"]["id"])
+            result = (market_id, str(category.get("numericId")), category.get("title") or slug)
+            _market_cache[slug] = result
+            last_lookup_error = None
+            return result
 
-    market_id = str(edges[0]["node"]["id"])
-    result = (market_id, str(category.get("numericId")), category.get("title") or slug)
-    _market_cache[slug] = result
-    return result
+    market_id, category_id, title, scrape_err = scrape_market_metadata_for_slug(slug)
+    if market_id:
+        result = (str(market_id), category_id, title or slug)
+        _market_cache[slug] = result
+        last_lookup_error = None
+        return result
+
+    if scrape_err:
+        last_lookup_error = scrape_err
+    elif last_graphql_error:
+        last_lookup_error = last_graphql_error
+    else:
+        last_lookup_error = None  # not listed yet
+    return None, None, None
 
 
 def fetch_market(market_id):
@@ -537,7 +754,9 @@ class PredictWS:
                     on_close=self._on_close,
                     on_error=self._on_error,
                 )
-                self.ws.run_forever(origin=ORIGIN, ping_interval=20, ping_timeout=10)
+                self.ws.run_forever(
+                    origin=ORIGIN, ping_interval=20, ping_timeout=10, **_ws_proxy_kwargs
+                )
             except Exception:
                 pass
             self._mark_disconnected()

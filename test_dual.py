@@ -866,6 +866,11 @@ def test_book_and_slugs():
     assert get_current_active_slug("eth", 15, at=START + 899) == "eth-updown-15m-1791813600"
     assert get_current_active_slug("btc", 60, at=START + 5) == "bitcoin-up-or-down-october-12-2026-10am-et"
     assert window_bounds(60, at=START + 1800) == (START, START + 3600)
+    from predict_feed import _parse_market_page
+    html = ("marketId=3491142&categoryId=btc-updown-5m-1792392300&"
+            "titleOverride=Bitcoin+Up+or+Down+-+October+19%2C+2%3A45AM-2%3A50AM+ET")
+    mid, _, title = _parse_market_page(html, "btc-updown-5m-1792392300")
+    assert mid == "3491142" and "2:45AM" in title
 
 
 def combo_sim(tmp, strategy, **kwargs):

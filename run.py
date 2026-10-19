@@ -18,9 +18,14 @@ from predict_feed import (
     CHAINLINK_FEED_IDS,
     SUPPORTED_DURATIONS,
     PredictWS,
+    configure_proxy_from_env,
     fetch_market,
     get_current_active_slug,
+    get_last_lookup_error,
     get_market_metadata_for_slug,
+    http_proxy_url,
+    load_dotenv,
+    set_http_proxy,
     window_bounds,
 )
 from ui import Dashboard, PlainUI, hhmm, stamp
@@ -325,7 +330,11 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
 
     market_id, category_id, title = get_market_metadata_for_slug(slug)
     if not market_id:
-        ui.event(f"[!] [{stamp()}] No Predict.fun market for {slug} yet. Retrying in 2 seconds...")
+        err = get_last_lookup_error()
+        if err:
+            ui.event(f"[!] [{stamp()}] Predict lookup failed for {slug}: {err}. Retrying in 2s...")
+        else:
+            ui.event(f"[!] [{stamp()}] No Predict.fun market for {slug} yet. Retrying in 2 seconds...")
         time.sleep(2)
         return price_to_beat
 
@@ -564,6 +573,9 @@ def parse_args():
                         help="Restore the starting balance (overrides the last capital_after in the log).")
     parser.add_argument("--feed-id", type=int, default=None,
                         help="Chainlink feed id for the coin (default from the built-in map: btc 1, eth 2, bnb 3).")
+    parser.add_argument("--proxy", default=None, metavar="URL",
+                        help="HTTP(S) proxy for Predict GraphQL, market HTML, and the WS "
+                             "(e.g. http://user:pass@host:8080). Overrides .env PROXY_POOL / PREDICT_HTTP_PROXY.")
     parser.add_argument("--plain", action="store_true",
                         help="Plain line output instead of the live dashboard (for nohup / log files).")
     return parser.parse_args()
@@ -571,6 +583,21 @@ def parse_args():
 
 def main():
     args = parse_args()
+    env_path = load_dotenv()
+    if args.proxy:
+        set_http_proxy(args.proxy)
+    else:
+        configure_proxy_from_env()
+    if http_proxy_url():
+        # Host only in the banner — avoid printing credentials.
+        from urllib.parse import urlparse
+        p = urlparse(http_proxy_url())
+        where = f" (from {env_path})" if env_path and not args.proxy else ""
+        print(f"Predict proxy: {p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "") + where,
+              flush=True)
+    elif env_path:
+        print(f"Loaded {env_path} but no PROXY_POOL / PREDICT_HTTP_PROXY set "
+              f"(use PROXY_POOL=http://user:pass@host:port, uncommented).", flush=True)
     coin = args.coin.strip().lower()
     duration = args.duration
     feed_id = args.feed_id or CHAINLINK_FEED_IDS.get(coin)
