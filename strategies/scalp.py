@@ -2,8 +2,9 @@
 
 Same optional structure gate as dual (default: off — trade any structure; log struct/RSI).
 Optional ``rsi_zone=(lo, hi)`` skips entries outside that RSI band (off by default).
-Default path: buy ≤30¢, TP bid ≥60¢. Optional ``target_cents=0`` / time-exit / confirmed stop
-via flags. Bid is inferred as ``1 − other_ask`` (same convention as against take-profit).
+Default path: buy ≤30¢, sell half at bid ≥40¢ and the rest at ≥60¢. Optional
+``target_cents=0`` / time-exit / confirmed stop via flags. Bid is inferred as
+``1 − other_ask`` (same convention as against take-profit).
 """
 
 from logs import format_time
@@ -11,12 +12,13 @@ from sim import BaseSim, Order
 
 
 class ScalpSim(BaseSim):
-    """Single-side: buy ask≤entry, sell bid≥TP (default 30→60); miss holds and loses."""
+    """Single-side: buy ask≤entry, ladder TP 40/60 by default; miss holds and loses."""
 
     strategy = "scalp"
     start_mode = "against"
 
-    def __init__(self, *args, entry_cents=30, target_cents=60, exit_left_seconds=0,
+    def __init__(self, *args, entry_cents=30, target_cents=60, ladder_first_cents=40,
+                 exit_left_seconds=0,
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
                  rsi_zone=None, **kwargs):
         # Block new entries / cancel unfilled once cancel_left_pct of the window is left
@@ -26,10 +28,14 @@ class ScalpSim(BaseSim):
         kwargs.setdefault("max_prev_move_pct", 0.0)
         super().__init__(*args, **kwargs)
         self.entry_cents = max(1, int(entry_cents))
-        # 0 = hold to settle (no take-profit); default 60 from 5m replay
+        # 0 = hold to settle (no take-profit); final TP default 60 from replay
         self.target_cents = max(0, int(target_cents))
         if self.target_cents > 0 and self.target_cents <= self.entry_cents:
             self.target_cents = self.entry_cents + 1
+        # First ladder tranche; 0 or outside (entry, target) disables the ladder (all-in target).
+        self.ladder_first_cents = max(0, int(ladder_first_cents or 0))
+        if not (self.entry_cents < self.ladder_first_cents < self.target_cents):
+            self.ladder_first_cents = 0
         self.exit_left_seconds = max(0, int(exit_left_seconds))
         # 0 = no hard stop
         self.stop_cents = max(0, int(stop_cents if stop_cents is not None else 0))
@@ -38,8 +44,22 @@ class ScalpSim(BaseSim):
         # None = no RSI gate; else (lo, hi) inclusive, 0–100
         self.rsi_zone = rsi_zone
 
+    @property
+    def ladder_active(self):
+        return self.ladder_first_cents > 0 and self.target_cents > 0
+
+    def tp_text(self):
+        if self.target_cents <= 0:
+            return "hold"
+        if self.ladder_active:
+            return f"TP ladder {self.ladder_first_cents}/{self.target_cents}¢"
+        return f"TP {self.target_cents}¢"
+
     def summarize(self):
-        if self.target_cents > 0:
+        if self.ladder_active:
+            tp = (f"TP ladder bid≥{self.ladder_first_cents}¢ (½) → ≥{self.target_cents}¢ (½) "
+                  f"(miss=−entry)")
+        elif self.target_cents > 0:
             tp = f"TP bid≥{self.target_cents}¢ (miss=−entry)"
         else:
             tp = "hold to settle"
@@ -120,7 +140,13 @@ class ScalpSim(BaseSim):
         state.action = "scalp"
         struct = state.structure or "any"
         rsi_bit = f"_rsi_{state.rsi:.0f}" if state.rsi is not None else ""
-        if self.target_cents > 0:
+        if self.ladder_active:
+            state.action_reason = (
+                f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_ladder_"
+                f"{self.ladder_first_cents}_{self.target_cents}c"
+                f"_structure_{struct}{rsi_bit}"
+            )
+        elif self.target_cents > 0:
             state.action_reason = (
                 f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_{self.target_cents}c"
                 f"_structure_{struct}{rsi_bit}"
@@ -133,26 +159,61 @@ class ScalpSim(BaseSim):
         state.scalp_stop_since = None
         return [Order(side, "main", ask, self.contracts, remaining)]
 
+    def _record_tp_sale(self, state, side, contracts, price_cents, remaining):
+        if contracts <= 0:
+            return
+        price = price_cents / 100.0
+        state.tp_sales.append((side, int(contracts), price, remaining))
+        if state.tp_side is None:
+            state.tp_side = side
+            state.tp_time_left = remaining
+        state.tp_contracts = sum(c for _, c, _, _ in state.tp_sales)
+        state.notes.append(
+            f"tp_sold_{side.lower()}_{int(contracts)}@{price_cents}_at_"
+            f"{format_time(remaining)}_left"
+        )
+
     def _maybe_take_profit(self, state, remaining, up_ask, down_ask):
-        if not state.take_profit or state.tp_side or not state.bet_side:
+        if not state.take_profit or not state.bet_side:
             return
         if state.stop_time_left is not None:
             return
         side = state.bet_side
         held = state.held(side)
-        bid = self._bid(side, up_ask, down_ask)
-        if held <= 0 or bid < state.take_profit - 1e-9:
+        if held <= 0:
             return
-        state.tp_side, state.tp_contracts, state.tp_time_left = side, held, remaining
-        state.notes.append(
-            f"tp_sold_{side.lower()}_{held}@{round(state.take_profit * 100)}_at_"
-            f"{format_time(remaining)}_left"
-        )
+        bid = self._bid(side, up_ask, down_ask)
+        if bid <= 0:
+            return
+
+        if not self.ladder_active:
+            if bid + 1e-9 < state.take_profit:
+                return
+            self._record_tp_sale(
+                state, side, held, int(round(state.take_profit * 100)), remaining
+            )
+            return
+
+        # Ladder: first tranche is half the original position (floor for odd sizes);
+        # the remainder stays for the final target. A direct jump to the final
+        # target fills both tranches on the same tick at their own prices.
+        total = state.contracts(side)
+        sold = sum(c for s, c, _, _ in state.tp_sales if s == side)
+        first_size = total // 2
+        if sold <= 0 and first_size > 0 and bid + 1e-9 >= self.ladder_first_cents / 100.0:
+            self._record_tp_sale(state, side, min(first_size, held), self.ladder_first_cents, remaining)
+            held = state.held(side)
+            if held <= 0:
+                return
+        if bid + 1e-9 >= state.take_profit:
+            self._record_tp_sale(
+                state, side, state.held(side), int(round(state.take_profit * 100)), remaining
+            )
 
     def _maybe_time_exit(self, state, remaining, up_ask, down_ask):
         if self.exit_left_seconds <= 0 or remaining > self.exit_left_seconds:
             return
-        if state.tp_side or state.stop_time_left is not None or not state.bet_side:
+        if state.stop_time_left is not None or not state.bet_side:
             return
         side = state.bet_side
         held = state.held(side)
@@ -169,7 +230,7 @@ class ScalpSim(BaseSim):
         """Optional wide stop only after bid stays ≤ stop for stop_confirm_seconds."""
         if self.stop_cents <= 0 or not state.bet_side:
             return
-        if state.tp_side or state.stop_time_left is not None:
+        if state.stop_time_left is not None:
             return
         side = state.bet_side
         held = state.held(side)
@@ -200,7 +261,7 @@ class ScalpSim(BaseSim):
     def _position_exits(self, state, now, remaining, up_ask, down_ask):
         """TP / hard stop / time exit first; shared savior only if still holding."""
         self._maybe_take_profit(state, remaining, up_ask, down_ask)
-        if state.tp_side:
+        if state.tp_side and state.bet_side and state.held(state.bet_side) <= 0:
             return
         self._maybe_hard_stop(state, now, remaining, up_ask, down_ask)
         if state.stop_time_left is not None:
@@ -212,10 +273,17 @@ class ScalpSim(BaseSim):
 
     def orders_text(self, state):
         text = super().orders_text(state)
-        if state.tp_side:
+        if state.tp_sales:
+            sold = "+".join(
+                f"{c}@{round(p * 100)}¢" for _, c, p, _ in state.tp_sales
+            )
+            text += f" · TP sold {sold}"
+            if state.bet_side and state.held(state.bet_side) > 0 and self.ladder_active:
+                text += f" · rest → {self.target_cents}¢"
+        elif state.tp_side:
             text += f" · TP {state.tp_contracts} @ {round(state.take_profit * 100)}¢"
         elif state.take_profit:
-            text += f" · TP {round(state.take_profit * 100)}¢"
+            text += f" · {self.tp_text()}"
         elif state.savior_cut_cents is not None and state.stop_time_left is None:
             text += f" · savior cut {state.savior_cut_cents}¢"
         elif state.bet_side and state.held(state.bet_side) > 0:

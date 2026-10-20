@@ -371,6 +371,8 @@ class WindowState:
     tp_side: str | None = None
     tp_contracts: int = 0
     tp_time_left: float | None = None
+    # Laddered take-profit sales: (side, contracts, price, time_left). Empty for all-in TP.
+    tp_sales: list = field(default_factory=list)
     reload: float = 0.0  # dollars topped up at the start of this window
     # seconds -> (side, contracts, bid, orders filled by then): the stop-loss rule checked at each STOP_CHECK_SECONDS
     stop_checks: dict = field(default_factory=dict)
@@ -462,8 +464,10 @@ class WindowState:
 
     def held(self, side):
         """Contracts still held: bought minus any sold by the stop-loss or the take-profit."""
+        ladder_sold = sum(c for s, c, _, _ in self.tp_sales if s == side)
+        legacy_sold = 0 if ladder_sold else (self.tp_contracts if self.tp_side == side else 0)
         return (self.contracts(side) - (self.stop_contracts if self.stop_side == side else 0)
-                - (self.tp_contracts if self.tp_side == side else 0))
+                - legacy_sold - ladder_sold)
 
     def avg_price(self, side):
         n = self.contracts(side)
@@ -919,7 +923,7 @@ class BaseSim:
         self._maybe_hedge(state, remaining, asks)
         self._check_stop_points(state, remaining, asks)
         self._maybe_stop(state, remaining, asks)
-        if state.stop_time_left is None and state.tp_side is None:
+        if state.stop_time_left is None and (state.tp_side is None or state.tp_sales):
             self._position_exits(state, now, remaining, up_ask, down_ask)
 
     def _first_orders(self, state, remaining, up_ask, down_ask):
@@ -1093,7 +1097,11 @@ class BaseSim:
             sale = state.stop_price * state.stop_contracts
             payout += sale
             fee += sale * taker_fee_bps / 10000.0
-        if state.tp_side:
+        if state.tp_sales:
+            sale = sum(price * contracts for _, contracts, price, _ in state.tp_sales)
+            payout += sale
+            fee += sale * maker_fee_bps / 10000.0
+        elif state.tp_side:
             sale = state.take_profit * state.tp_contracts
             payout += sale
             fee += sale * maker_fee_bps / 10000.0
@@ -1191,8 +1199,11 @@ class BaseSim:
                 "would_stop_saved": f"{saved:+.4f}" if saved is not None else "",
                 "take_profit_cents": _cents(state.take_profit) if state.take_profit else "",
                 "tp_side": state.tp_side or "",
-                "tp_contracts": state.tp_contracts if state.tp_side else "",
-                "tp_time_left": _secs(state.tp_time_left),
+                "tp_contracts": (
+                    sum(c for _, c, _, _ in state.tp_sales) if state.tp_sales
+                    else state.tp_contracts if state.tp_side else ""
+                ),
+                "tp_time_left": _secs(state.tp_sales[0][3] if state.tp_sales else state.tp_time_left),
                 **self._stop_check_columns(state, outcome, maker_fee_bps, taker_fee_bps),
                 **_cheap_columns("up", state.cheap_up),
                 **_cheap_columns("down", state.cheap_down),

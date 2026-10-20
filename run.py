@@ -199,7 +199,9 @@ def decide_scalp(ui, sim, state, prev_move):
     """Refresh structure/RSI (always logged); optional require_structure skip; else watch ask≤entry."""
     reason, streak = _structure_gate_reason(sim, state, prev_move)
     sim.resolve_decision(state, reason)
-    tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
+    tp = sim.tp_text() if hasattr(sim, "tp_text") else (
+        f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold"
+    )
     if reason:
         message = f"[skip] Skipping scalp ({reason}; {streak}): logging this window without trading."
     else:
@@ -455,7 +457,7 @@ def parse_args():
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
                              "scalp: buy ask≤--scalp-entry (any structure by default), "
-                             "TP bid≥--scalp-target (default 30→60; miss=−entry). "
+                             "TP ladder --scalp-ladder-first→--scalp-target (default 40→60; miss=−entry). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -530,8 +532,11 @@ def parse_args():
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 30; 5m replay).")
     parser.add_argument("--scalp-target", type=int, default=60, metavar="CENTS",
-                        help="Scalp: take-profit when bid reaches this (default 60; 0 = hold to settle; "
+                        help="Scalp: final take-profit when bid reaches this (default 60; 0 = hold to settle; "
                              "miss without TP = −entry at settle).")
+    parser.add_argument("--scalp-ladder-first", type=int, default=40, metavar="CENTS",
+                        help="Scalp: sell half the position when bid reaches this first ladder level, "
+                             "the rest at --scalp-target (default 40 → 60 ladder; 0 = all-in at target).")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",
@@ -660,6 +665,10 @@ def main():
         raise SystemExit("--scalp-entry must be between 1 and 99")
     if args.scalp_target != 0 and not args.scalp_entry < args.scalp_target <= 99:
         raise SystemExit("--scalp-target must be 0 (hold) or > --scalp-entry and ≤99")
+    if args.scalp_ladder_first != 0 and args.scalp_target != 0 and not (
+        args.scalp_entry < args.scalp_ladder_first < args.scalp_target
+    ):
+        raise SystemExit("--scalp-ladder-first must be 0 (off) or between --scalp-entry and --scalp-target")
     rsi_zone = None
     if (args.rsi_zone or "").strip():
         raw = args.rsi_zone.strip().replace(":", "-").replace("–", "-").replace("—", "-")
@@ -747,7 +756,8 @@ def main():
         scalp_common = dict(common)
         scalp_common["stop_loss_seconds"] = 0
         sim = ScalpSim(*sim_args, **scalp_common, entry_cents=args.scalp_entry,
-                       target_cents=args.scalp_target, exit_left_seconds=args.scalp_exit_left,
+                       target_cents=args.scalp_target, ladder_first_cents=args.scalp_ladder_first,
+                       exit_left_seconds=args.scalp_exit_left,
                        stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm,
                        require_structure=args.dual_structure, rsi_zone=rsi_zone)
     elif strategy == "against":

@@ -647,7 +647,9 @@ class Dashboard:
             need = getattr(sim, "require_structure", "") or "any"
             zone = getattr(sim, "rsi_zone", None)
             rsi_gate = (f"RSI {zone[0]:g}–{zone[1]:g}" if zone else "any RSI")
-            tp = (f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold")
+            tp = sim.tp_text() if hasattr(sim, "tp_text") else (
+                f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold"
+            )
             stop = (f"stop ≤{sim.stop_cents}¢×{sim.stop_confirm_seconds}s"
                     if getattr(sim, "stop_cents", 0) > 0 else "no stop")
             time_x = (f"exit @{sim.exit_left_seconds}s left"
@@ -670,8 +672,12 @@ class Dashboard:
         if sim.strategy == "leader":
             prices = "at ask"
         elif sim.strategy == "scalp":
-            prices = (f"≤{sim.entry_cents}¢ hold" if getattr(sim, "target_cents", 0) <= 0
-                      else f"≤{sim.entry_cents}¢→{sim.target_cents}¢")
+            if getattr(sim, "target_cents", 0) <= 0:
+                prices = f"≤{sim.entry_cents}¢ hold"
+            elif getattr(sim, "ladder_active", False):
+                prices = f"≤{sim.entry_cents}¢→{sim.ladder_first_cents}/{sim.target_cents}¢"
+            else:
+                prices = f"≤{sim.entry_cents}¢→{sim.target_cents}¢"
         elif sim.strategy == "dual":
             prices = f"both @{sim.limit_cents}¢"
         else:

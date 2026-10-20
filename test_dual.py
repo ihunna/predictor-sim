@@ -176,12 +176,14 @@ def test_quiet_dual_waits_for_enter_after(tmp):
     assert "never_placed" in sim.settle(state, "Up", PTB, PTB, 0.0)["notes"]
 
 
-def scalp_sim(tmp, entry=30, target=60, exit_left=0, stop=0, confirm=5, require_structure="",
+def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, confirm=5,
+              require_structure="",
               cancel_left_pct=0.0, savior_left_pct=0.0, savior_force_left_pct=20.0,
               savior_stall_pct=10.0, duration=5, rsi_zone=None):
     """Structure gate / cancel / savior / RSI zone off by default so fill/TP tests stay place-on-cheap."""
     return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
-                    entry_cents=entry, target_cents=target, exit_left_seconds=exit_left,
+                    entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
+                    exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm,
                     require_structure=require_structure, cancel_left_pct=cancel_left_pct,
                     savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
@@ -204,7 +206,7 @@ def test_scalp_hold_to_settle(tmp):
 
 
 def test_scalp_tp(tmp):
-    """Default path: buy ≤30¢ → sell when bid ≥60¢."""
+    """Default path: buy ≤30¢ → ladder half @40¢, rest @60¢ (direct jump fills both)."""
     sim = scalp_sim(tmp)
     state = run_window(sim, [
         (0, 0.50, 0.51),
@@ -213,6 +215,35 @@ def test_scalp_tp(tmp):
     ])
     assert state.action == "scalp" and state.up_fill_price == 0.25 and state.up_taker
     assert state.tp_side == "Up" and state.tp_contracts == 8
+    assert [(c, round(p * 100)) for _, c, p, _ in state.tp_sales] == [(4, 40), (4, 60)]
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert float(row["pnl"]) == 2.00  # 4×0.40 + 4×0.60 − 8×0.25
+
+
+def test_scalp_ladder_partial_then_settle(tmp):
+    """Bid reaches 40¢ only: bank half, remaining half settles (hedged loss)."""
+    sim = scalp_sim(tmp)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+        (60, 0.40, 0.55),  # up bid = 0.45 ≥ 0.40, < 0.60
+        (100, 0.40, 0.70),  # bid falls back; no second sale
+    ])
+    assert state.tp_side == "Up" and state.tp_contracts == 4
+    assert state.held("Up") == 4
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert float(row["pnl"]) == -0.40  # 4×0.40 − 8×0.25; remainder loses
+
+
+def test_scalp_ladder_off_all_in(tmp):
+    """ladder_first=0 → all-in at target (legacy TP60)."""
+    sim = scalp_sim(tmp, ladder_first=0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+        (60, 0.40, 0.38),
+    ])
+    assert state.tp_contracts == 8
     row = sim.settle(state, "Down", 1, 2, None)
     assert float(row["pnl"]) == 2.80  # (0.60 − 0.25) × 8
 
@@ -1366,6 +1397,8 @@ def main():
             test_quiet_dual_waits_for_enter_after,
             test_scalp_hold_to_settle,
             test_scalp_tp,
+            test_scalp_ladder_partial_then_settle,
+            test_scalp_ladder_off_all_in,
             test_scalp_miss_is_loss,
             test_scalp_ignores_brief_wick,
             test_scalp_confirmed_stop,
