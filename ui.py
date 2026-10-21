@@ -674,10 +674,15 @@ class Dashboard:
         elif sim.strategy == "scalp":
             if getattr(sim, "target_cents", 0) <= 0:
                 prices = f"≤{sim.entry_cents}¢ hold"
+            elif getattr(sim, "split_active", False):
+                prices = (f"½≤{sim.entry_cents}¢→{sim.target_cents}¢ "
+                          f"+ ½≤{sim.split_entry_cents}¢→{sim.split_target_cents}¢")
             elif getattr(sim, "ladder_active", False):
                 prices = f"≤{sim.entry_cents}¢→{sim.ladder_first_cents}/{sim.target_cents}¢"
             else:
                 prices = f"≤{sim.entry_cents}¢→{sim.target_cents}¢"
+            if getattr(sim, "delta_cap_usd", 0):
+                prices += f" · Δcap ${sim.delta_cap_usd:.0f}"
         elif sim.strategy == "dual":
             prices = f"both @{sim.limit_cents}¢"
         else:

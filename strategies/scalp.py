@@ -2,8 +2,11 @@
 
 Same optional structure gate as dual (default: off — trade any structure; log struct/RSI).
 Optional ``rsi_zone=(lo, hi)`` skips entries outside that RSI band (off by default).
-Default path: buy ≤30¢, sell half at bid ≥40¢ and the rest at ≥60¢. Optional
-``target_cents=0`` / time-exit / confirmed stop via flags. Bid is inferred as
+Default path (2026-10-21): split entry — half the size at ask ≤30¢ (take-profit at
+bid ≥60¢), the other half only if the ask falls to ≤20¢ (take-profit at bid ≥40¢).
+Optional ``delta_cap_usd`` skips entries when this window's BTC move against the
+bought side already exceeds the cap at entry (per-duration caps via run.py).
+Optional ``target_cents=0`` / time-exit / confirmed stop via flags. Bid is inferred as
 ``1 − other_ask`` (same convention as against take-profit).
 """
 
@@ -17,7 +20,8 @@ class ScalpSim(BaseSim):
     strategy = "scalp"
     start_mode = "against"
 
-    def __init__(self, *args, entry_cents=30, target_cents=60, ladder_first_cents=40,
+    def __init__(self, *args, entry_cents=30, target_cents=60, ladder_first_cents=0,
+                 split_entry_cents=20, split_target_cents=40, delta_cap_usd=0.0,
                  exit_left_seconds=0,
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
                  rsi_zone=None, **kwargs):
@@ -36,6 +40,19 @@ class ScalpSim(BaseSim):
         self.ladder_first_cents = max(0, int(ladder_first_cents or 0))
         if not (self.entry_cents < self.ladder_first_cents < self.target_cents):
             self.ladder_first_cents = 0
+        # Split entry: second half only at/below split_entry_cents, exited at
+        # split_target_cents. 0 disables (single all-in entry at entry_cents).
+        self.split_entry_cents = max(0, int(split_entry_cents or 0))
+        if not (0 < self.split_entry_cents < self.entry_cents):
+            self.split_entry_cents = 0
+        self.split_target_cents = max(0, int(split_target_cents or 0))
+        if self.split_entry_cents and not (
+            self.split_entry_cents < self.split_target_cents <= max(self.target_cents, self.split_entry_cents + 1)
+        ):
+            self.split_target_cents = self.entry_cents + 10
+        # Skip entries when this window's move against the bought side exceeds
+        # this many USD at entry (0 = off). Set per duration by run.py.
+        self.delta_cap_usd = max(0.0, float(delta_cap_usd or 0.0))
         self.exit_left_seconds = max(0, int(exit_left_seconds))
         # 0 = no hard stop
         self.stop_cents = max(0, int(stop_cents if stop_cents is not None else 0))
@@ -48,21 +65,34 @@ class ScalpSim(BaseSim):
     def ladder_active(self):
         return self.ladder_first_cents > 0 and self.target_cents > 0
 
+    @property
+    def split_active(self):
+        return self.split_entry_cents > 0 and self.target_cents > 0 and self.contracts >= 2
+
     def tp_text(self):
         if self.target_cents <= 0:
             return "hold"
+        if self.split_active:
+            return (f"TP {self.target_cents}¢ (1st ½) / {self.split_target_cents}¢ "
+                    f"(2nd ½ @{self.split_entry_cents}¢)")
         if self.ladder_active:
             return f"TP ladder {self.ladder_first_cents}/{self.target_cents}¢"
         return f"TP {self.target_cents}¢"
 
     def summarize(self):
-        if self.ladder_active:
+        if self.split_active:
+            tp = (f"split entry: ½ @{self.entry_cents}¢ → TP bid≥{self.target_cents}¢, "
+                  f"½ @{self.split_entry_cents}¢ → TP bid≥{self.split_target_cents}¢ "
+                  f"(miss=−entry)")
+        elif self.ladder_active:
             tp = (f"TP ladder bid≥{self.ladder_first_cents}¢ (½) → ≥{self.target_cents}¢ (½) "
                   f"(miss=−entry)")
         elif self.target_cents > 0:
             tp = f"TP bid≥{self.target_cents}¢ (miss=−entry)"
         else:
             tp = "hold to settle"
+        if self.delta_cap_usd > 0:
+            tp += f", skip if adverse Δ>${self.delta_cap_usd:.0f} at entry"
         stop = (
             f"hard stop ≤{self.stop_cents}¢ for {self.stop_confirm_seconds}s"
             if self.stop_cents > 0 else "no hard stop"
@@ -134,6 +164,14 @@ class ScalpSim(BaseSim):
             return []
 
         side, ask = min(candidates, key=lambda x: x[1])
+
+        # Adverse-delta cap: this window's BTC move (USD) against the side we
+        # would buy. Too much ground already lost in this window → no entry.
+        if self.delta_cap_usd > 0:
+            adverse = self._adverse_usd(state, side)
+            if adverse is None or adverse > self.delta_cap_usd + 1e-9:
+                return []
+
         state.mode = "against"
         state.bet_side = side
         state.take_profit = self.target_cents / 100.0 if self.target_cents > 0 else 0.0
@@ -157,7 +195,59 @@ class ScalpSim(BaseSim):
             )
         state.notes.append(state.action_reason)
         state.scalp_stop_since = None
-        return [Order(side, "main", ask, self.contracts, remaining)]
+
+        if not self.split_active:
+            return [Order(side, "main", ask, self.contracts, remaining)]
+        first_size = self.contracts // 2
+        second_size = self.contracts - first_size
+        if ask <= self.split_entry_cents / 100.0 + 1e-9:
+            # Already at/below the deep level: both halves fill now at the ask.
+            state.scalp_split_pending = False
+            return [
+                Order(side, "main", ask, first_size, remaining),
+                Order(side, "main", ask, second_size, remaining),
+            ]
+        state.scalp_split_pending = True
+        state.scalp_split_size = second_size
+        return [Order(side, "main", ask, first_size, remaining)]
+
+    @staticmethod
+    def _adverse_usd(state, side):
+        """Signed USD move of BTC vs this window's PTB, against `side` (>0 = against)."""
+        move = state.btc_move_pct
+        ptb = getattr(state, "ptb_price", 0.0)
+        if move is None or not ptb:
+            return None
+        move_usd = move / 100.0 * ptb
+        return -move_usd if side == "Up" else move_usd
+
+    def _maybe_split_entry(self, state, remaining, up_ask, down_ask):
+        """Second half: buy the rest only if the ask falls to the split level
+        while entries are still open (same first-third deadline as the entry)."""
+        if not self.split_active or not getattr(state, "scalp_split_pending", False):
+            return
+        if state.stop_time_left is not None or not state.bet_side:
+            state.scalp_split_pending = False
+            return
+        if self.cancel_left_pct > 0 and remaining <= self.cancel_left_seconds():
+            state.scalp_split_pending = False
+            state.notes.append("split_second_expired_unfilled")
+            return
+        side = state.bet_side
+        ask = up_ask if side == "Up" else down_ask
+        if ask <= 0 or ask > self.split_entry_cents / 100.0 + 1e-9:
+            return
+        size = int(getattr(state, "scalp_split_size", 0) or 0)
+        state.scalp_split_pending = False
+        if size <= 0:
+            return
+        order = Order(side, "main", ask, size, remaining)
+        order.check(remaining, ask)
+        if order.filled:
+            state.orders.append(order)
+            state.notes.append(
+                f"split_filled_{side.lower()}_{size}@{int(round(ask * 100))}"
+            )
 
     def _record_tp_sale(self, state, side, contracts, price_cents, remaining):
         if contracts <= 0:
@@ -186,6 +276,10 @@ class ScalpSim(BaseSim):
         if bid <= 0:
             return
 
+        if self.split_active:
+            self._maybe_split_take_profit(state, side, bid, remaining)
+            return
+
         if not self.ladder_active:
             if bid + 1e-9 < state.take_profit:
                 return
@@ -209,6 +303,28 @@ class ScalpSim(BaseSim):
             self._record_tp_sale(
                 state, side, state.held(side), int(round(state.take_profit * 100)), remaining
             )
+
+    def _maybe_split_take_profit(self, state, side, bid, remaining):
+        """Per-tranche exits: first half at target_cents, deep second half at
+        split_target_cents. Each tranche sells in full when its bid level hits."""
+        tranches = [o for o in state.orders if o.side == side and o.filled]
+        sold_map = getattr(state, "scalp_sold_by_order", None)
+        if sold_map is None:
+            sold_map = state.scalp_sold_by_order = {}
+        for idx, order in enumerate(tranches):
+            target = (
+                self.split_target_cents
+                if idx > 0 and len(tranches) > 1
+                else int(round(state.take_profit * 100))
+            )
+            if target <= 0 or bid + 1e-9 < target / 100.0:
+                continue
+            unsold = order.contracts - sold_map.get(idx, 0)
+            sell = min(unsold, state.held(side))
+            if sell <= 0:
+                continue
+            self._record_tp_sale(state, side, sell, target, remaining)
+            sold_map[idx] = sold_map.get(idx, 0) + sell
 
     def _maybe_time_exit(self, state, remaining, up_ask, down_ask):
         if self.exit_left_seconds <= 0 or remaining > self.exit_left_seconds:
@@ -259,7 +375,8 @@ class ScalpSim(BaseSim):
         )
 
     def _position_exits(self, state, now, remaining, up_ask, down_ask):
-        """TP / hard stop / time exit first; shared savior only if still holding."""
+        """Split second entry, then TP / hard stop / time exit; savior last."""
+        self._maybe_split_entry(state, remaining, up_ask, down_ask)
         self._maybe_take_profit(state, remaining, up_ask, down_ask)
         if state.tp_side and state.bet_side and state.held(state.bet_side) <= 0:
             return
@@ -278,7 +395,7 @@ class ScalpSim(BaseSim):
                 f"{c}@{round(p * 100)}¢" for _, c, p, _ in state.tp_sales
             )
             text += f" · TP sold {sold}"
-            if state.bet_side and state.held(state.bet_side) > 0 and self.ladder_active:
+            if state.bet_side and state.held(state.bet_side) > 0 and (self.ladder_active or self.split_active):
                 text += f" · rest → {self.target_cents}¢"
         elif state.tp_side:
             text += f" · TP {state.tp_contracts} @ {round(state.take_profit * 100)}¢"

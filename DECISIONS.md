@@ -1,0 +1,82 @@
+# Decision log — scalp
+
+## 2026-10-21 — IMPLEMENTED: TP60 + split entry + adverse-delta caps
+
+Live scalp defaults changed (user decision, after corrected replay showed the
+40/60 ladder and unfiltered entries losing on 5m/15m):
+
+- **Exit back to TP60** for the first half; `--scalp-ladder-first` default now 0.
+- **Split entry** (`--scalp-split-entry 20`, `--scalp-split-target 40`): half the
+  size at ask ≤30¢ (TP60), the other half only if the ask falls to ≤20¢ (TP40).
+  Second half must fill within the same first-third entry deadline.
+- **Adverse-delta caps** (`--scalp-delta-cap`, auto by duration): skip the entry
+  when this window's BTC move against the bought side already exceeds
+  **$20 (5m) / $50 (15m) / $200 (60m)** at entry. Cap derivation (settle EV by
+  adverse-USD-at-fill bins): 5m positive only < $20; 15m positive only < $50;
+  60m $150–200 recovered 4/5 vs ≥$200 only 1/5 (n small, $200 is provisional).
+
+Corrected-replay expectations at implementation (windows replay, limit fills):
+proposed pooled −$70.40 / PF 0.85 vs current −$200.00 / PF 0.78 — i.e. mainly a
+loss-reduction change; only 60m was PF > 1 (1.25). Forward results on live logs
+should be compared against these numbers, not the pre-fix inflated ones.
+
+
+
+## 2026-10-20 — Skip scalp fades of a hard 60m hour (>$150)?
+
+**Status: recorded as user preference — NOT implemented in live code. Re-review on fresh data.**
+**Code name (when implemented): `--scalp-skip-hour-fade 150`** (argparse dest `scalp_skip_hour_fade`, USD threshold, 0/off by default).
+
+### The rule in question
+On 5m and 15m scalp, skip the entry when the scalp buys the side *opposite* the current
+60m window's direction and the 60m move from its open is large:
+
+- Hour is up > $150 from its open → do **not** buy Down
+- Hour is down > $150 from its open → do **not** buy Up
+
+(60m delta measured at the 5m/15m window start: window start price vs current hour's open.)
+
+### User's position
+Even though the replay says these trades are profitable, the user judges skipping them
+the better option — they usually lose directionally, and the user does not want to fade a
+side the 60m window is winning hard. Profit forgone is accepted.
+
+### Replay evidence at time of decision (ladder 40/60, savior off, CF gaps excluded)
+Data: scalp logs through 2026-10-20 ~07:55 UTC. Dropped = window not traded.
+
+| | Take anything | Skip >$150 fades | Skipped set |
+|---|---|---|---|
+| 5m | n=469, EV +$0.252, +$118.08 | n=420, EV +$0.228, +$95.84 | n=49, EV +$0.454, +$22.24 |
+| 15m | n=168, EV +$0.307, +$51.60 | n=154, EV +$0.253, +$38.96 | n=14, EV +$0.903, +$12.64 |
+| Pooled | n=637, EV +$0.266, +$169.68 | n=574, EV +$0.235, +$134.80 | n=63, EV +$0.554, +$34.88 |
+
+Risk profile, pooled: skipping gave SD $1.61 vs $1.60, max DD −$27.92 vs −$25.12,
+worst trade −$2.40 unchanged, loss streak 14 unchanged, profit factor 1.37 vs 1.43.
+So the replay found **no smoothness benefit** — only fewer trades (574 vs 637) and
+less capital deployed ($1,328 vs $1,474).
+
+Why the fades still paid on replay: the faded side wins the window only ~35% of the time
+on 5m, but reaches the 40¢ ladder rung ~88% of the time. The rule only looks good under
+hold-to-settle (e.g. hour down <−$150, buy Up: settle EV −$0.18 vs ladder EV +$0.37).
+
+### Review trigger
+Re-run this exact test when at least ~100 new pooled >$150-fade fills exist
+(roughly another week of 5m+15m scalp logs), or sooner if live skipped-shadow trades
+can be logged. Revisit if, on the fresh sample, the skipped set turns EV-negative on
+the ladder replay or skipping starts improving max drawdown.
+
+### Correction 2026-10-21 (later same day)
+The replay helper `tp_point.max_bid_after_fill` was found to count bid rises that
+occurred *before* the fill (helper since fixed: post-fill rises only). All EVs in the
+two sections above are inflated. Corrected re-run, same sample: the skipped
+(>$150 fade) set is n=92, EV **+$0.285** (not +$0.554/+$0.590) and skipping still
+lowers kept EV (−$0.161 → −$0.211 on 5+15m). Qualitative conclusion unchanged —
+skipping still costs — but magnitudes are roughly half those recorded above.
+
+### Re-check 2026-10-21 (data through 2026-10-21 08:30 UTC)
+Skipped set grew to n=92 pooled and got *stronger*, not weaker:
+5m dropped n=73, EV +$0.460 (+$33.60); 15m dropped n=19, EV +$1.086 (+$20.64);
+pooled dropped EV +$0.590 (+$54.24). Skipping would cut pooled EV +$0.313 → +$0.283
+and worsen max DD (−$23.28 → −$26.32). Conclusion unchanged; user preference stands
+as recorded. Not yet at the ~100-new-fills trigger (only ~29 new fade fills since
+the original test), so this is an interim check, not the formal review.

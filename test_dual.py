@@ -179,10 +179,13 @@ def test_quiet_dual_waits_for_enter_after(tmp):
 def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, confirm=5,
               require_structure="",
               cancel_left_pct=0.0, savior_left_pct=0.0, savior_force_left_pct=20.0,
-              savior_stall_pct=10.0, duration=5, rsi_zone=None):
-    """Structure gate / cancel / savior / RSI zone off by default so fill/TP tests stay place-on-cheap."""
+              savior_stall_pct=10.0, duration=5, rsi_zone=None,
+              split_entry=0, split_target=40, delta_cap=0.0):
+    """Structure gate / cancel / savior / RSI zone / split / delta cap off by default so fill/TP tests stay place-on-cheap."""
     return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
+                    split_entry_cents=split_entry, split_target_cents=split_target,
+                    delta_cap_usd=delta_cap,
                     exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm,
                     require_structure=require_structure, cancel_left_pct=cancel_left_pct,
@@ -246,6 +249,52 @@ def test_scalp_ladder_off_all_in(tmp):
     assert state.tp_contracts == 8
     row = sim.settle(state, "Down", 1, 2, None)
     assert float(row["pnl"]) == 2.80  # (0.60 − 0.25) × 8
+
+
+def test_scalp_split_entry_and_tranche_tps(tmp):
+    """Split: 4 @≤30¢ → TP60; 4 more @≤20¢ → TP40 (deep tranche exits first)."""
+    sim = scalp_sim(tmp, ladder_first=0, split_entry=20, split_target=40)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),   # first half: 4 Up @25
+        (40, 0.18, 0.83),   # second half: 4 Up @18 (≤20)
+        (60, 0.40, 0.55),   # up bid 45¢ → deep tranche sells 4 @40
+        (80, 0.40, 0.38),   # up bid 62¢ → first tranche sells 4 @60
+    ])
+    assert state.contracts("Up") == 8
+    assert [(c, round(p * 100)) for _, c, p, _ in state.tp_sales] == [(4, 40), (4, 60)]
+    row = sim.settle(state, "Down", 1, 2, None)
+    assert float(row["pnl"]) == 2.28  # 4×0.40 + 4×0.60 − (4×0.25 + 4×0.18)
+
+
+def test_scalp_split_second_expires(tmp):
+    """Ask never falls to the split level: only the first half is bought."""
+    sim = scalp_sim(tmp, ladder_first=0, split_entry=20, split_target=40)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+        (100, 0.35, 0.66),
+    ])
+    assert state.contracts("Up") == 4
+    row = sim.settle(state, "Up", 1, 2, None)
+    assert float(row["pnl"]) == 3.00  # 4×(1 − 0.25)
+
+
+def test_scalp_delta_cap(tmp):
+    """Adverse move at entry above the USD cap → no entry; below it → entry."""
+    sim = scalp_sim(tmp, ladder_first=0, delta_cap=20.0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+    ], btc=99_970.0, ptb=100_000.0)  # BTC −$30 vs PTB; buying Up is $30 adverse > $20 cap
+    assert state.action != "scalp" and state.contracts("Up") == 0
+
+    sim2 = scalp_sim(tmp, ladder_first=0, delta_cap=20.0)
+    state2 = run_window(sim2, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+    ], btc=99_990.0, ptb=100_000.0)  # −$10 adverse ≤ cap
+    assert state2.action == "scalp" and state2.contracts("Up") == 8
 
 
 def test_scalp_miss_is_loss(tmp):
@@ -1399,6 +1448,9 @@ def main():
             test_scalp_tp,
             test_scalp_ladder_partial_then_settle,
             test_scalp_ladder_off_all_in,
+            test_scalp_split_entry_and_tranche_tps,
+            test_scalp_split_second_expires,
+            test_scalp_delta_cap,
             test_scalp_miss_is_loss,
             test_scalp_ignores_brief_wick,
             test_scalp_confirmed_stop,

@@ -456,8 +456,9 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: buy ask≤--scalp-entry (any structure by default), "
-                             "TP ladder --scalp-ladder-first→--scalp-target (default 40→60; miss=−entry). "
+                             "scalp: split buy ½ ask≤--scalp-entry → TP --scalp-target (default 30→60), "
+                             "½ ask≤--scalp-split-entry → TP --scalp-split-target (default 20→40), "
+                             "adverse-delta cap per duration (see --scalp-delta-cap). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -534,9 +535,19 @@ def parse_args():
     parser.add_argument("--scalp-target", type=int, default=60, metavar="CENTS",
                         help="Scalp: final take-profit when bid reaches this (default 60; 0 = hold to settle; "
                              "miss without TP = −entry at settle).")
-    parser.add_argument("--scalp-ladder-first", type=int, default=40, metavar="CENTS",
-                        help="Scalp: sell half the position when bid reaches this first ladder level, "
-                             "the rest at --scalp-target (default 40 → 60 ladder; 0 = all-in at target).")
+    parser.add_argument("--scalp-ladder-first", type=int, default=0, metavar="CENTS",
+                        help="Scalp (legacy, split off): sell half the position when bid reaches this "
+                             "first ladder level, the rest at --scalp-target (default 0 = off; "
+                             "all-in at target).")
+    parser.add_argument("--scalp-split-entry", type=int, default=20, metavar="CENTS",
+                        help="Scalp: buy the second half only when the ask falls to this "
+                             "(default 20; 0 = off, single all-in entry).")
+    parser.add_argument("--scalp-split-target", type=int, default=40, metavar="CENTS",
+                        help="Scalp: take-profit for the second (deep) half (default 40).")
+    parser.add_argument("--scalp-delta-cap", type=float, default=None, metavar="USD",
+                        help="Scalp: skip entries when this window's BTC move against the bought "
+                             "side already exceeds this many USD at entry. Default: auto by "
+                             "duration (5m $20, 15m $50, 60m $200); 0 = off.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",
@@ -669,6 +680,21 @@ def main():
         args.scalp_entry < args.scalp_ladder_first < args.scalp_target
     ):
         raise SystemExit("--scalp-ladder-first must be 0 (off) or between --scalp-entry and --scalp-target")
+    if args.scalp_split_entry != 0 and not 0 < args.scalp_split_entry < args.scalp_entry:
+        raise SystemExit("--scalp-split-entry must be 0 (off) or below --scalp-entry")
+    if args.scalp_split_entry != 0 and args.scalp_target != 0 and not (
+        args.scalp_split_entry < args.scalp_split_target < args.scalp_target
+    ):
+        raise SystemExit("--scalp-split-target must be between --scalp-split-entry and --scalp-target")
+    # Adverse-delta cap: auto per duration unless explicitly set (0 = off).
+    if args.scalp_delta_cap is None:
+        scalp_delta_cap = {5: 20.0, 15: 50.0, 60: 200.0}.get(duration, 0.0)
+    elif args.scalp_delta_cap < 0:
+        raise SystemExit("--scalp-delta-cap must be >= 0")
+    else:
+        scalp_delta_cap = float(args.scalp_delta_cap)
+    if strategy != "scalp":
+        scalp_delta_cap = 0.0
     rsi_zone = None
     if (args.rsi_zone or "").strip():
         raw = args.rsi_zone.strip().replace(":", "-").replace("–", "-").replace("—", "-")
@@ -757,6 +783,9 @@ def main():
         scalp_common["stop_loss_seconds"] = 0
         sim = ScalpSim(*sim_args, **scalp_common, entry_cents=args.scalp_entry,
                        target_cents=args.scalp_target, ladder_first_cents=args.scalp_ladder_first,
+                       split_entry_cents=args.scalp_split_entry,
+                       split_target_cents=args.scalp_split_target,
+                       delta_cap_usd=scalp_delta_cap,
                        exit_left_seconds=args.scalp_exit_left,
                        stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm,
                        require_structure=args.dual_structure, rsi_zone=rsi_zone)

@@ -65,14 +65,19 @@ def secs(x):
 def max_bid_after_fill(r, side):
     s = side.lower()
     best = None
-    for bucket in (30, 20, 15, 10, 5, 40):
+    fill_left = secs(r.get(f"{s}_fill_time_left")) or secs(r.get(f"{s}_touch_30c_time_left"))
+    # Buckets at/below the 30c entry touch only: max_bid_after_40c can pre-date the
+    # fill (ask fell through 40 before we bought at <=30), so it must not count.
+    for bucket in (30, 20, 15, 10, 5):
         mb = cents(r.get(f"{s}_max_bid_after_{bucket}c"))
         if mb is not None:
             best = mb if best is None else max(best, mb)
+    # Rise levels count only if reached at/after the fill (time_left <= fill_left);
+    # a rise earlier in the window happened before we owned the side.
     for lvl in range(35, 100, 5):
-        if secs(r.get(f"{s}_rise_{lvl}c_time_left")) is not None:
+        tl = secs(r.get(f"{s}_rise_{lvl}c_time_left"))
+        if tl is not None and (fill_left is None or tl <= fill_left + 1e-9):
             best = lvl if best is None else max(best, lvl)
-    fill_left = secs(r.get(f"{s}_fill_time_left")) or secs(r.get(f"{s}_touch_30c_time_left"))
     try:
         dur = int(float(r.get("duration") or 5))
     except (TypeError, ValueError):

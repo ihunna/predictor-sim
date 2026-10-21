@@ -385,6 +385,8 @@ class WindowState:
     snapshots: dict = field(default_factory=dict)
     # latest BTC % move from the price to beat on this tick (None until both btc and ptb are known)
     btc_move_pct: float | None = None
+    btc_price: float = 0.0  # latest BTC price and price-to-beat seen on a tick (for USD delta gates)
+    ptb_price: float = 0.0
     # (seconds_in, signed % move, up_ask, down_ask) when the rounded delta changes
     btc_delta_changes: list = field(default_factory=list)
     btc_delta_last_key: str | None = None
@@ -856,6 +858,10 @@ class BaseSim:
         elapsed = now - state.window_start
         move = (btc - ptb) / ptb * 100 if btc > 0 and ptb > 0 else None
         state.btc_move_pct = move
+        if btc > 0:
+            state.btc_price = btc
+        if ptb > 0:
+            state.ptb_price = ptb
         if move is not None:
             key = _delta_key(move)
             if key != state.btc_delta_last_key:
