@@ -558,6 +558,14 @@ def parse_args():
     parser.add_argument("--rsi-zone", default="", metavar="LO-HI",
                         help="Scalp only: enter only when RSI is in this inclusive band, e.g. 70-100. "
                              "Empty (default) = off. Unknown RSI skips when set.")
+    parser.add_argument("--trade-hours", "--scalp-hours", dest="trade_hours", default="",
+                        metavar="START-END",
+                        help="All strategies: enter only windows starting in this local-time "
+                             "range, e.g. 11-17 (end exclusive; may wrap midnight, e.g. 22-06). "
+                             "Empty (default) = off, trade 24h.")
+    parser.add_argument("--trade-hours-utc-offset", "--scalp-hours-utc-offset",
+                        dest="trade_hours_utc_offset", type=float, default=1.0, metavar="HOURS",
+                        help="UTC offset for --trade-hours wall-clock (default +1).")
 
     parser.add_argument("--hedge-at", type=int, default=0, metavar="CENTS",
                         help="After one side fills, split the other side: enough contracts at this price to break "
@@ -710,6 +718,19 @@ def main():
         rsi_zone = (lo, hi)
         if strategy != "scalp":
             raise SystemExit("--rsi-zone is scalp-only")
+    trade_hours = None
+    if (args.trade_hours or "").strip():
+        raw = args.trade_hours.strip().replace(":", "-").replace("–", "-").replace("—", "-")
+        parts = [p.strip() for p in raw.split("-") if p.strip()]
+        if len(parts) != 2:
+            raise SystemExit("--trade-hours must look like 11-17 (START-END)")
+        try:
+            start_h, end_h = int(parts[0]), int(parts[1])
+        except ValueError:
+            raise SystemExit("--trade-hours must look like 11-17 (START-END)")
+        if not (0 <= start_h <= 24 and 0 <= end_h <= 24) or start_h == end_h:
+            raise SystemExit("--trade-hours bounds must be hours 0-24 and different")
+        trade_hours = (start_h % 24, end_h % 24)
     if args.scalp_exit_left < 0 or args.scalp_exit_left >= duration * 60:
         raise SystemExit(f"--scalp-exit-left must be between 0 and {duration * 60 - 1}")
     if not 0 <= args.scalp_stop < args.scalp_entry:
@@ -758,6 +779,7 @@ def main():
 
     sim_args = (coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source)
     common = dict(max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct,
+                  trade_hours=trade_hours, hours_utc_offset=args.trade_hours_utc_offset,
                   savior_left_pct=args.savior_left_pct, savior_force_left_pct=args.savior_force_left_pct,
                   savior_stall_pct=args.savior_stall_pct,
                   hedge_cents=args.hedge_at, stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,

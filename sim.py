@@ -14,7 +14,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from logs import format_time
 from structure import PriceStructure
@@ -529,7 +529,12 @@ class BaseSim:
     def __init__(self, coin, duration, limit_cents, contracts, place_at, trades_file, capital, capital_source,
                  max_prev_move_pct=0.0, cancel_left_pct=67.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=False,
                  stop_loss_min_cents=0, reload_to=0.0, reloaded_total=0.0, avg_windows=24, rsi_windows=14,
-                 savior_left_pct=0.0, savior_force_left_pct=20.0, savior_stall_pct=10.0):
+                 savior_left_pct=0.0, savior_force_left_pct=20.0, savior_stall_pct=10.0,
+                 trade_hours=None, hours_utc_offset=1.0):
+        # Optional local-time entry window for every strategy: (start_hour,
+        # end_hour) wall-clock at UTC+hours_utc_offset; None = trade 24h.
+        self.trade_hours = trade_hours
+        self.hours_utc_offset = float(hours_utc_offset)
         self.max_prev_move_pct = max_prev_move_pct
         self.stop_loss_seconds = stop_loss_seconds
         self.stop_loss_live = stop_loss_live
@@ -898,10 +903,27 @@ class BaseSim:
 
         self._trade_tick(state, now, remaining, up_ask, down_ask)
 
+    def _hours_ok(self, state):
+        """Local-time gate on the window's start hour (trade_hours None = always ok)."""
+        if not self.trade_hours:
+            return True
+        start_h, end_h = self.trade_hours
+        local = datetime.fromtimestamp(
+            state.window_start, timezone(timedelta(hours=self.hours_utc_offset))
+        )
+        h = local.hour
+        if start_h < end_h:
+            return start_h <= h < end_h
+        if start_h > end_h:  # wraps midnight, e.g. 22-06
+            return h >= start_h or h < end_h
+        return True
+
     def _trade_tick(self, state, now, remaining, up_ask, down_ask):
         """Places, fills, hedges, cancels and stops the window's orders."""
         if (not state.trading or state.decision_pending or state.cancelled_time_left is not None
                 or state.stop_time_left is not None):
+            return
+        if not self._hours_ok(state):
             return
 
         cancel_left = self.cancel_left_seconds()

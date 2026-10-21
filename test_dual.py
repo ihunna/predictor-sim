@@ -25,13 +25,14 @@ def run_window(sim, ticks, start=START, end=END, btc=None, ptb=None):
 
 def new_sim(tmp, place_at=None, capital=100.0, hedge_cents=0, stop_loss_seconds=0, stop_loss_live=True,
             stop_loss_min_cents=0, enter_after_seconds=0, quiet_max_pct=0.0, cheap_cents=0,
-            require_structure=""):
+            require_structure="", trade_hours=None, hours_offset=0.0):
     """Default structure gate off so older dual fill tests stay place-at-start / both-limits."""
     return DualSim("btc", 5, 30, 8, place_at, os.path.join(tmp, "trades.csv"), capital, "default",
                    hedge_cents=hedge_cents, stop_loss_seconds=stop_loss_seconds, stop_loss_live=stop_loss_live,
                    stop_loss_min_cents=stop_loss_min_cents, enter_after_seconds=enter_after_seconds,
                    quiet_max_pct=quiet_max_pct, cheap_cents=cheap_cents, require_structure=require_structure,
-                   allow_balanced=True, cancel_left_pct=0.0, savior_left_pct=0.0)
+                   allow_balanced=True, cancel_left_pct=0.0, savior_left_pct=0.0,
+                   trade_hours=trade_hours, hours_utc_offset=hours_offset)
 
 
 def quiet_sim(tmp, limit=40, place_at=None, enter_after_seconds=0, quiet_max_pct=0.01, cheap_cents=20,
@@ -180,12 +181,14 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
               require_structure="",
               cancel_left_pct=0.0, savior_left_pct=0.0, savior_force_left_pct=20.0,
               savior_stall_pct=10.0, duration=5, rsi_zone=None,
-              split_entry=0, split_target=40, delta_cap=0.0):
+              split_entry=0, split_target=40, delta_cap=0.0,
+              trade_hours=None, hours_offset=0.0):
     """Structure gate / cancel / savior / RSI zone / split / delta cap off by default so fill/TP tests stay place-on-cheap."""
     return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
                     split_entry_cents=split_entry, split_target_cents=split_target,
                     delta_cap_usd=delta_cap,
+                    trade_hours=trade_hours, hours_utc_offset=hours_offset,
                     exit_left_seconds=exit_left,
                     stop_cents=stop, stop_confirm_seconds=confirm,
                     require_structure=require_structure, cancel_left_pct=cancel_left_pct,
@@ -295,6 +298,29 @@ def test_scalp_delta_cap(tmp):
         (20, 0.25, 0.76),
     ], btc=99_990.0, ptb=100_000.0)  # −$10 adverse ≤ cap
     assert state2.action == "scalp" and state2.contracts("Up") == 8
+
+
+def test_scalp_trade_hours(tmp):
+    """--scalp-hours gate: window start (14:00 UTC in tests) inside range trades, outside skips."""
+    ticks = [(0, 0.50, 0.51), (20, 0.25, 0.76)]
+    inside = scalp_sim(tmp, ladder_first=0, trade_hours=(11, 17), hours_offset=0.0)
+    state = run_window(inside, ticks)
+    assert state.action == "scalp" and state.contracts("Up") == 8
+
+    outside = scalp_sim(tmp, ladder_first=0, trade_hours=(17, 20), hours_offset=0.0)
+    state2 = run_window(outside, ticks)
+    assert state2.action != "scalp" and state2.contracts("Up") == 0
+
+
+def test_trade_hours_blocks_dual(tmp):
+    """--trade-hours is strategy-agnostic: a dual outside the range never places."""
+    sim = new_sim(tmp, trade_hours=(17, 20))  # test window starts 14:00 UTC, offset 0
+    state = run_window(sim, [(0, 0.51, 0.50), (20, 0.30, 0.70)])
+    assert state.placed_time_left is None and state.fill_type == "none"
+
+    sim2 = new_sim(tmp, trade_hours=(11, 17))
+    state2 = run_window(sim2, [(0, 0.51, 0.50), (20, 0.30, 0.70)])
+    assert state2.placed_time_left is not None
 
 
 def test_scalp_miss_is_loss(tmp):
@@ -1451,6 +1477,8 @@ def main():
             test_scalp_split_entry_and_tranche_tps,
             test_scalp_split_second_expires,
             test_scalp_delta_cap,
+            test_scalp_trade_hours,
+            test_trade_hours_blocks_dual,
             test_scalp_miss_is_loss,
             test_scalp_ignores_brief_wick,
             test_scalp_confirmed_stop,

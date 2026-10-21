@@ -93,6 +93,9 @@ class ScalpSim(BaseSim):
             tp = "hold to settle"
         if self.delta_cap_usd > 0:
             tp += f", skip if adverse Δ>${self.delta_cap_usd:.0f} at entry"
+        if self.trade_hours:
+            tp += (f", trade {self.trade_hours[0]:02d}:00–{self.trade_hours[1]:02d}:00 "
+                   f"(UTC{self.hours_utc_offset:+g}) only")
         stop = (
             f"hard stop ≤{self.stop_cents}¢ for {self.stop_confirm_seconds}s"
             if self.stop_cents > 0 else "no hard stop"

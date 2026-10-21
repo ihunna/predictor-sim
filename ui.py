@@ -669,6 +669,9 @@ class Dashboard:
         if getattr(sim, "savior_left_pct", 0) > 0 and sim.strategy in ("against", "leader", "combo", "fav", "regime"):
             skip += (f" · {sim.savior_summary_text()}" if hasattr(sim, "savior_summary_text")
                      else "")
+        if getattr(sim, "trade_hours", None):
+            skip += (f" · trade {sim.trade_hours[0]:02d}:00–{sim.trade_hours[1]:02d}:00 "
+                     f"(UTC{sim.hours_utc_offset:+g}) only")
         if sim.strategy == "leader":
             prices = "at ask"
         elif sim.strategy == "scalp":
