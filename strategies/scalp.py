@@ -229,6 +229,12 @@ class ScalpSim(BaseSim):
         if state.stop_time_left is not None or not state.bet_side:
             state.scalp_split_pending = False
             return
+        if state.tp_sales or state.tp_side is not None:
+            # First half already exited (TP): the trade is done — do not buy
+            # the second half into a new position.
+            state.scalp_split_pending = False
+            state.notes.append("split_second_cancelled_first_exited")
+            return
         if self.cancel_left_pct > 0 and remaining <= self.cancel_left_seconds():
             state.scalp_split_pending = False
             state.notes.append("split_second_expired_unfilled")
