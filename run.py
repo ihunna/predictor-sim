@@ -456,8 +456,7 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: split buy ½ ask≤--scalp-entry → TP --scalp-target (default 30→60), "
-                             "½ ask≤--scalp-split-entry → TP --scalp-split-target (default 20→40), "
+                             "scalp: 5m/15m split ½≤30→TP60 + ½≤20→TP40; 60m all-in ≤30→TP60; "
                              "adverse-delta cap per duration (see --scalp-delta-cap). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
@@ -539,11 +538,11 @@ def parse_args():
                         help="Scalp (legacy, split off): sell half the position when bid reaches this "
                              "first ladder level, the rest at --scalp-target (default 0 = off; "
                              "all-in at target).")
-    parser.add_argument("--scalp-split-entry", type=int, default=20, metavar="CENTS",
-                        help="Scalp: buy the second half only when the ask falls to this "
-                             "(default 20; 0 = off, single all-in entry).")
+    parser.add_argument("--scalp-split-entry", type=int, default=None, metavar="CENTS",
+                        help="Scalp: buy the second half only when the ask falls to this. "
+                             "Default: 20 on 5m/15m, 0 (off = all-in) on 60m. Pass 0 to force all-in.")
     parser.add_argument("--scalp-split-target", type=int, default=40, metavar="CENTS",
-                        help="Scalp: take-profit for the second (deep) half (default 40).")
+                        help="Scalp: take-profit for the second (deep) half (default 40; ignored if split off).")
     parser.add_argument("--scalp-delta-cap", type=float, default=None, metavar="USD",
                         help="Scalp: skip entries when this window's BTC move against the bought "
                              "side already exceeds this many USD at entry. Default: auto by "
@@ -688,6 +687,9 @@ def main():
         args.scalp_entry < args.scalp_ladder_first < args.scalp_target
     ):
         raise SystemExit("--scalp-ladder-first must be 0 (off) or between --scalp-entry and --scalp-target")
+    # Split entry: auto by duration unless explicitly set (60m = all-in TP60).
+    if args.scalp_split_entry is None:
+        args.scalp_split_entry = 0 if duration == 60 else 20
     if args.scalp_split_entry != 0 and not 0 < args.scalp_split_entry < args.scalp_entry:
         raise SystemExit("--scalp-split-entry must be 0 (off) or below --scalp-entry")
     if args.scalp_split_entry != 0 and args.scalp_target != 0 and not (
