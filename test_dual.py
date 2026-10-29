@@ -7,9 +7,11 @@ import tempfile
 from logs import MARKET_CSV_HEADER, format_lowest_cents, log_to_csv
 from predict_feed import best_asks, book_depth, get_current_active_slug, window_bounds
 from sim import TRADES_HEADER, last_capital_after, last_reloaded_total
+from btc_atr import atr_24h_from_ranges
 from strategies import (
     AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim,
-    SCALP_DELTA_CAP_USD, SCALP_ENTRY_ELAPSED,
+    SCALP_ATR_MAX_USD, SCALP_DELTA_CAP_USD, SCALP_ENTRY_ELAPSED,
+    SCALP_VELOCITY_MAX_USD_PER_MIN,
     scalp_cancel_left_pct, scalp_delta_cap_usd, scalp_warmup_seconds,
 )
 
@@ -186,24 +188,30 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
               cancel_left_pct=0.0, savior_left_pct=0.0, savior_force_left_pct=20.0,
               savior_stall_pct=10.0, duration=5, rsi_zone=None,
               split_entry=0, split_target=40, delta_cap=0.0,
+              atr_max=0.0, velocity_max=0.0, atr_24h=None,
               trade_hours=None, hours_offset=0.0, enter_after_seconds=0):
-    """Warm-up / cancel / structure / savior / RSI / split / delta off by default so fill/TP tests stay place-on-cheap."""
-    return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
-                    entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
-                    split_entry_cents=split_entry, split_target_cents=split_target,
-                    delta_cap_usd=delta_cap,
-                    trade_hours=trade_hours, hours_utc_offset=hours_offset,
-                    exit_left_seconds=exit_left, enter_after_seconds=enter_after_seconds,
-                    stop_cents=stop, stop_confirm_seconds=confirm,
-                    require_structure=require_structure, cancel_left_pct=cancel_left_pct,
-                    savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
-                    savior_stall_pct=savior_stall_pct, rsi_zone=rsi_zone)
+    """Warm-up / cancel / structure / savior / RSI / split / delta / ATR / velocity off by default so fill/TP tests stay place-on-cheap."""
+    sim = ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
+                   entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
+                   split_entry_cents=split_entry, split_target_cents=split_target,
+                   delta_cap_usd=delta_cap, atr_max_usd=atr_max,
+                   velocity_max_usd_per_min=velocity_max,
+                   trade_hours=trade_hours, hours_utc_offset=hours_offset,
+                   exit_left_seconds=exit_left, enter_after_seconds=enter_after_seconds,
+                   stop_cents=stop, stop_confirm_seconds=confirm,
+                   require_structure=require_structure, cancel_left_pct=cancel_left_pct,
+                   savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
+                   savior_stall_pct=savior_stall_pct, rsi_zone=rsi_zone)
+    sim.atr_24h = atr_24h
+    return sim
 
 
 def test_scalp_timing_defaults(tmp):
     """All-in 30→60; warm-up + inclusive entry window + Δ caps scale with duration."""
     assert SCALP_ENTRY_ELAPSED == {5: 30, 15: 120, 60: 300}
     assert SCALP_DELTA_CAP_USD == {5: 20.0, 15: 50.0, 60: 200.0}
+    assert SCALP_ATR_MAX_USD == 350.0
+    assert SCALP_VELOCITY_MAX_USD_PER_MIN == 60.0
     assert scalp_warmup_seconds(5) == 5
     assert scalp_warmup_seconds(15) == 15
     assert scalp_warmup_seconds(60) == 60
@@ -218,6 +226,61 @@ def test_scalp_timing_defaults(tmp):
         assert sim.entry_elapsed_max == SCALP_ENTRY_ELAPSED[dur]
         assert abs(sim.cancel_left_seconds() - cancel_left) < 1e-6
         assert scalp_delta_cap_usd(dur) == SCALP_DELTA_CAP_USD[dur]
+        assert sim.atr_max_usd == SCALP_ATR_MAX_USD
+        assert sim.velocity_max_usd_per_min == SCALP_VELOCITY_MAX_USD_PER_MIN
+
+
+def test_atr_24h_from_ranges(tmp):
+    assert atr_24h_from_ranges([]) is None
+    assert atr_24h_from_ranges([100.0, 200.0, 300.0]) == 200.0
+
+
+def test_scalp_atr_gate(tmp):
+    """ATR above max or missing → no orders; ATR ok → can enter."""
+    ticks = [(0, 0.50, 0.51), (20, 0.25, 0.76)]
+    blocked = scalp_sim(tmp, ladder_first=0, atr_max=350.0, atr_24h=400.0)
+    state = run_window(blocked, ticks)
+    assert state.action != "scalp" and state.contracts("Up") == 0
+    assert "atr_high" in state.notes
+
+    missing = scalp_sim(tmp, ladder_first=0, atr_max=350.0, atr_24h=None)
+    state_m = run_window(missing, ticks)
+    assert state_m.action != "scalp" and "atr_high" in state_m.notes
+
+    ok = scalp_sim(tmp, ladder_first=0, atr_max=350.0, atr_24h=300.0)
+    state_ok = run_window(ok, ticks)
+    assert state_ok.action == "scalp" and state_ok.contracts("Up") == 8
+
+
+def test_scalp_velocity_gate(tmp):
+    """High adverse early in window blocks; same adverse later may pass."""
+    # −$30 vs PTB buying Up; at elapsed=20s → 90$/min > 60; at 60s → 30$/min ≤ 60.
+    early = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
+    state = run_window(early, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+    ], btc=99_970.0, ptb=100_000.0)
+    assert state.action != "scalp" and "velocity_high" in state.notes
+
+    later = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
+    state2 = run_window(later, [
+        (0, 0.50, 0.51),
+        (60, 0.25, 0.76),
+    ], btc=99_970.0, ptb=100_000.0)
+    assert state2.action == "scalp" and state2.contracts("Up") == 8
+
+
+def test_scalp_gate_order_atr_before_delta(tmp):
+    """ATR failing blocks even when Δ would pass; never reaches fill."""
+    # −$10 adverse ≤ $20 Δ cap, but ATR high → atr_high, no fill.
+    sim = scalp_sim(tmp, ladder_first=0, atr_max=350.0, atr_24h=500.0, delta_cap=20.0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+    ], btc=99_990.0, ptb=100_000.0)
+    assert state.action != "scalp" and state.contracts("Up") == 0
+    assert "atr_high" in state.notes
+    assert "adverse_delta" not in state.notes
 
 
 def test_scalp_warmup_blocks_then_allows(tmp):
@@ -1533,6 +1596,10 @@ def main():
             test_dual_waits_when_delta_loud,
             test_quiet_dual_waits_for_enter_after,
             test_scalp_timing_defaults,
+            test_atr_24h_from_ranges,
+            test_scalp_atr_gate,
+            test_scalp_velocity_gate,
+            test_scalp_gate_order_atr_before_delta,
             test_scalp_warmup_blocks_then_allows,
             test_scalp_entry_allowed_at_inclusive_max,
             test_scalp_hard_cutoff_blocks_late_entry,

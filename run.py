@@ -17,8 +17,10 @@ import time
 
 from logs import format_lowest_cents, format_time, log_to_csv
 from sim import last_capital_after, last_reloaded_total
+from btc_atr import HourlyAtr24h
 from strategies import (
     AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES,
+    SCALP_ATR_MAX_USD, SCALP_VELOCITY_MAX_USD_PER_MIN,
     scalp_cancel_left_pct, scalp_delta_cap_usd, scalp_warmup_seconds,
 )
 from predict_feed import (
@@ -334,7 +336,7 @@ def settle_window(ui, ws, sim, state, feed_id, duration, updown_file, price_to_b
         ui.event(f"[!] Settling window {state.window_start} failed: {e}")
 
 
-def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat):
+def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat, atr_cache=None):
     """Tracks one window's asks for the simulator, shows its result, and returns the next window's PTB."""
     window_start, window_end = window_bounds(duration)
     slug = get_current_active_slug(coin, duration)
@@ -350,6 +352,10 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
         return price_to_beat
 
     ws.set_market(market_id)
+    # Refresh ATR each new scalp window (1B: re-check; fail closed until ready).
+    if atr_cache is not None and getattr(sim, "atr_max_usd", 0) > 0:
+        atr_cache.refresh()
+        sim.atr_24h = atr_cache.atr
     skip_reason = "no_ptb" if price_to_beat <= 0 else None
     state = sim.start_window(window_start, window_end, slug, market_id, skip_reason=skip_reason,
                              decision_pending=skip_reason is None)
@@ -402,6 +408,8 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat)
         up_ask, down_ask = ws.asks(market_id)
         ptb = ws.official_prices(market_id)[0] or ws.first_price_from(window_start) or price_to_beat
         btc = ws.latest_price()
+        if atr_cache is not None and getattr(sim, "atr_max_usd", 0) > 0:
+            sim.atr_24h = atr_cache.atr
         sim.on_tick(now, up_ask, down_ask, btc or 0.0, ptb or 0.0)
         # Announce cancel as soon as it fires (all strats that use cancel_left_pct).
         if not saw_cancel and state.cancelled_time_left is not None:
@@ -461,7 +469,9 @@ def parse_args():
                              "(no quiet/skew/enter-after). "
                              "scalp: all-in ≤30→TP60 (limit); warm-up then gated entry "
                              "(5m 5–30s / 15m 15–120s / 60m 60–300s); "
-                             "signed adverse-Δ cap $20/$50/$200 (see --scalp-delta-cap). "
+                             "ATR24h≤$350 → velocity≤$60/min → signed adverse-Δ "
+                             "$20/$50/$200 (see --scalp-atr-max / --scalp-velocity-max / "
+                             "--scalp-delta-cap). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -552,6 +562,14 @@ def parse_args():
                         help="Scalp: skip when signed adverse BTC move from PTB (USD) against "
                              "the bought side exceeds this at entry. Default: 5m $20 / 15m $50 / "
                              "60m $200; 0 = off.")
+    parser.add_argument("--scalp-atr-max", type=float, default=None, metavar="USD",
+                        help="Scalp: skip entry while 24h hourly ATR (Binance 1h mean high−low) "
+                             f"exceeds this, or ATR not ready. Default {SCALP_ATR_MAX_USD:.0f}; 0 = off. "
+                             "Fail skips only this window (re-check next).")
+    parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
+                        help="Scalp: skip when adverse USD / elapsed minutes exceeds this. "
+                             f"Default {SCALP_VELOCITY_MAX_USD_PER_MIN:.0f}; 0 = off. "
+                             "Favorable/flat adverse always passes.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",
@@ -716,9 +734,22 @@ def main():
         raise SystemExit("--scalp-delta-cap must be >= 0")
     else:
         scalp_delta_cap = float(args.scalp_delta_cap)
+    if args.scalp_atr_max is None:
+        scalp_atr_max = SCALP_ATR_MAX_USD
+    elif args.scalp_atr_max < 0:
+        raise SystemExit("--scalp-atr-max must be >= 0")
+    else:
+        scalp_atr_max = float(args.scalp_atr_max)
+    if args.scalp_velocity_max is None:
+        scalp_velocity_max = SCALP_VELOCITY_MAX_USD_PER_MIN
+    elif args.scalp_velocity_max < 0:
+        raise SystemExit("--scalp-velocity-max must be >= 0")
+    else:
+        scalp_velocity_max = float(args.scalp_velocity_max)
     if strategy != "scalp":
         scalp_delta_cap = 0.0
-
+        scalp_atr_max = 0.0
+        scalp_velocity_max = 0.0
 
     rsi_zone = None
     if (args.rsi_zone or "").strip():
@@ -825,6 +856,8 @@ def main():
                        split_entry_cents=args.scalp_split_entry,
                        split_target_cents=args.scalp_split_target,
                        delta_cap_usd=scalp_delta_cap,
+                       atr_max_usd=scalp_atr_max,
+                       velocity_max_usd_per_min=scalp_velocity_max,
                        exit_left_seconds=args.scalp_exit_left,
                        enter_after_seconds=args.enter_after,
                        stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm,
@@ -851,6 +884,12 @@ def main():
     print(sim.summarize())
     print(f"[files] updown={updown_file} | trades={trades_file}")
 
+    atr_cache = None
+    if strategy == "scalp" and getattr(sim, "atr_max_usd", 0) > 0:
+        atr_cache = HourlyAtr24h(coin=coin)
+        atr_cache.seed_background()
+        print(f"[atr] seeding Binance 1h ATR24h for {coin.upper()} (gate ≤${sim.atr_max_usd:.0f})")
+
     print("[ws] Initializing Predict.fun socket...")
     ws = PredictWS(feed_id)
 
@@ -875,7 +914,10 @@ def main():
     try:
         while True:
             try:
-                current_ptb = run_window(ui, ws, sim, coin, duration, feed_id, updown_file, current_ptb)
+                current_ptb = run_window(
+                    ui, ws, sim, coin, duration, feed_id, updown_file, current_ptb,
+                    atr_cache=atr_cache,
+                )
             except Exception as e:
                 ui.event(f"Error in loop execution: {e}. Restarting cycle...")
                 time.sleep(2)

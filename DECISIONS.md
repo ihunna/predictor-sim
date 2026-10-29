@@ -1,5 +1,15 @@
 # Decision log — scalp
 
+## 2026-10-29 — IMPLEMENTED: ATR + velocity + adverse Δ pipeline
+
+After time gate + ask ≤30¢ (side chosen), ordered entry gates (all durations):
+
+1. **ATR24h ≤ $350** (`--scalp-atr-max`; 0 = off) — Binance `BTCUSDT` 1h mean(high−low) over 24 completed hours. Fail closed if ATR missing. **(1B)** skip only current window entries; re-check next window (no day-long pause).
+2. **Adverse velocity ≤ $60/min** (`--scalp-velocity-max`; 0 = off) — `adverse_usd / max(elapsed_s,1)/60`. Favorable/flat (`adverse ≤ 0`) always passes. **(2A)** same for 5m/15m/60m.
+3. **Signed adverse Δ ≤ cap** (`--scalp-delta-cap`) — $20 / $50 / $200 by duration (unchanged).
+
+Skip reasons logged: `atr_high`, `velocity_high`, `adverse_delta`.
+
 ## 2026-10-29 — IMPLEMENTED: full formula all durations (30→TP60 + signed Δ)
 
 Live scalp defaults (same formula, scaled by duration):
@@ -14,6 +24,7 @@ Live scalp defaults (same formula, scaled by duration):
 - **Signed adverse Δ:** `±(btc_move_pct/100)×PTB` against the side we would buy; skip if `> cap`.
 - **TP** is a resting limit (maker fee path in `compute_result`); entry lifts the ask (taker).
 - Miss TP → hold to settle.
+- Vol gates (ATR / velocity) layered on top — see entry above.
 
 Replay (60m, touch-based, maker TP / taker entry fees): Δ filter improves TP60; TP70 scored higher on that sample but live default stays **TP60** unless `--scalp-target 70`.
 

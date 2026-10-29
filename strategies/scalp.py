@@ -5,7 +5,8 @@ Default formula (all durations, 2026-10-29), scaled by window length:
 * **Warm-up:** no entry while ``elapsed < duration`` seconds (5s / 15s / 60s).
 * **Entry window:** ``warmup ≤ elapsed ≤ entry_max`` (30s / 120s / 300s).
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Δ filter:** signed adverse USD from PTB/start ≤ cap ($20 / $50 / $200).
+* **Vol pipeline (after ask):** ATR24h ≤ $350 → adverse velocity ≤ $60/min →
+  signed adverse Δ ≤ cap ($20 / $50 / $200).
 * **Exit:** resting limit TP at bid ≥60¢ (maker); miss → hold to settle.
 
 Optional split/ladder/RSI/structure/time-exit/stop via flags. Bid = ``1 − other_ask``.
@@ -18,6 +19,9 @@ from sim import BaseSim, Order
 SCALP_ENTRY_ELAPSED = {5: 30, 15: 120, 60: 300}
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 20.0, 15: 50.0, 60: 200.0}
+# Macro / velocity defaults (0 = off).
+SCALP_ATR_MAX_USD = 350.0
+SCALP_VELOCITY_MAX_USD_PER_MIN = 60.0
 
 
 def scalp_warmup_seconds(duration):
@@ -50,6 +54,7 @@ class ScalpSim(BaseSim):
 
     def __init__(self, *args, entry_cents=30, target_cents=60, ladder_first_cents=0,
                  split_entry_cents=0, split_target_cents=40, delta_cap_usd=0.0,
+                 atr_max_usd=None, velocity_max_usd_per_min=None,
                  exit_left_seconds=0, enter_after_seconds=None,
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
                  rsi_zone=None, **kwargs):
@@ -80,6 +85,15 @@ class ScalpSim(BaseSim):
             self.split_target_cents = self.entry_cents + 10
         # Signed adverse-Δ skip (USD) at entry; 0 = off. Defaults via run.py / SCALP_DELTA_CAP_USD.
         self.delta_cap_usd = max(0.0, float(delta_cap_usd or 0.0))
+        # Layer 1: 24h hourly ATR max (USD); 0 = off. None → live default.
+        if atr_max_usd is None:
+            atr_max_usd = SCALP_ATR_MAX_USD
+        self.atr_max_usd = max(0.0, float(atr_max_usd or 0.0))
+        self.atr_24h: float | None = None  # set by run.py / tests
+        # Layer 2: adverse USD per elapsed minute; 0 = off. None → live default.
+        if velocity_max_usd_per_min is None:
+            velocity_max_usd_per_min = SCALP_VELOCITY_MAX_USD_PER_MIN
+        self.velocity_max_usd_per_min = max(0.0, float(velocity_max_usd_per_min or 0.0))
         self.exit_left_seconds = max(0, int(exit_left_seconds))
         # Warm-up: no entries while elapsed < this (default = duration minutes as seconds).
         if enter_after_seconds is None:
@@ -127,6 +141,10 @@ class ScalpSim(BaseSim):
             tp = f"TP bid≥{self.target_cents}¢ (miss=−entry)"
         else:
             tp = "hold to settle"
+        if self.atr_max_usd > 0:
+            tp += f", ATR24h≤${self.atr_max_usd:.0f}"
+        if self.velocity_max_usd_per_min > 0:
+            tp += f", velocity≤${self.velocity_max_usd_per_min:.0f}/min"
         if self.delta_cap_usd > 0:
             tp += f", skip if adverse Δ>${self.delta_cap_usd:.0f} at entry"
         if self.trade_hours:
@@ -221,11 +239,31 @@ class ScalpSim(BaseSim):
 
         side, ask = min(candidates, key=lambda x: x[1])
 
-        # Adverse-delta cap: this window's BTC move (USD) against the side we
-        # would buy. Too much ground already lost in this window → no entry.
+        # Layer 1 — macro vol: 24h hourly ATR must be ready and ≤ max (fail closed).
+        if self.atr_max_usd > 0:
+            atr = self.atr_24h
+            if atr is None or atr > self.atr_max_usd + 1e-9:
+                state.notes.append("atr_high")
+                state.action_reason = "atr_high"
+                return []
+
+        adverse = self._adverse_usd(state, side)
+        elapsed_s = self._elapsed(state, remaining)
+
+        # Layer 2 — adverse velocity ($/min of elapsed); favorable/flat always passes.
+        if self.velocity_max_usd_per_min > 0 and adverse is not None and adverse > 0:
+            elapsed_min = max(elapsed_s, 1) / 60.0
+            velocity = adverse / elapsed_min
+            if velocity > self.velocity_max_usd_per_min + 1e-9:
+                state.notes.append("velocity_high")
+                state.action_reason = "velocity_high"
+                return []
+
+        # Layer 3 — signed adverse-Δ cap (USD) against the side we would buy.
         if self.delta_cap_usd > 0:
-            adverse = self._adverse_usd(state, side)
             if adverse is None or adverse > self.delta_cap_usd + 1e-9:
+                state.notes.append("adverse_delta")
+                state.action_reason = "adverse_delta"
                 return []
 
         state.mode = "against"

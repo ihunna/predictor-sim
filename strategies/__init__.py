@@ -5,8 +5,10 @@ from .dual import DualSim
 from .leader import LeaderSim
 from .scalp import (
     ScalpSim,
+    SCALP_ATR_MAX_USD,
     SCALP_DELTA_CAP_USD,
     SCALP_ENTRY_ELAPSED,
+    SCALP_VELOCITY_MAX_USD_PER_MIN,
     scalp_cancel_left_pct,
     scalp_delta_cap_usd,
     scalp_entry_elapsed_max,
@@ -15,7 +17,8 @@ from .scalp import (
 
 __all__ = [
     "AgainstSim", "ComboSim", "DualSim", "LeaderSim", "ScalpSim", "STRATEGIES",
-    "SCALP_DELTA_CAP_USD", "SCALP_ENTRY_ELAPSED",
+    "SCALP_ATR_MAX_USD", "SCALP_DELTA_CAP_USD", "SCALP_ENTRY_ELAPSED",
+    "SCALP_VELOCITY_MAX_USD_PER_MIN",
     "scalp_cancel_left_pct", "scalp_delta_cap_usd",
     "scalp_entry_elapsed_max", "scalp_warmup_seconds",
 ]

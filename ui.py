@@ -688,6 +688,12 @@ class Dashboard:
                 prices = f"≤{sim.entry_cents}¢→{sim.ladder_first_cents}/{sim.target_cents}¢"
             else:
                 prices = f"≤{sim.entry_cents}¢→{sim.target_cents}¢"
+            if getattr(sim, "atr_max_usd", 0):
+                atr_now = getattr(sim, "atr_24h", None)
+                atr_bit = f"${atr_now:.0f}" if atr_now is not None else "?"
+                prices += f" · ATR≤${sim.atr_max_usd:.0f} ({atr_bit})"
+            if getattr(sim, "velocity_max_usd_per_min", 0):
+                prices += f" · vel≤${sim.velocity_max_usd_per_min:.0f}/m"
             if getattr(sim, "delta_cap_usd", 0):
                 prices += f" · Δcap ${sim.delta_cap_usd:.0f}"
         elif sim.strategy == "dual":
