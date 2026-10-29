@@ -412,6 +412,43 @@ class Dashboard:
             else:
                 struct_line.append("   RSI ", style="dim")
                 struct_line.append("--", style="dim")
+            # Scalp vol gates: live ATR + adverse velocity next to structure/RSI.
+            if sim.strategy == "scalp" and (
+                getattr(sim, "atr_max_usd", 0) > 0 or getattr(sim, "velocity_max_usd_per_min", 0) > 0
+            ):
+                atr_max = getattr(sim, "atr_max_usd", 0) or 0
+                if atr_max > 0:
+                    atr_now = getattr(sim, "atr_24h", None)
+                    struct_line.append("   ATR ", style="dim")
+                    if atr_now is None:
+                        struct_line.append("--", style="bold red")
+                    else:
+                        atr_ok = atr_now <= atr_max + 1e-9
+                        struct_line.append(
+                            f"${atr_now:.0f}",
+                            style="bold green" if atr_ok else "bold red",
+                        )
+                vel_max = getattr(sim, "velocity_max_usd_per_min", 0) or 0
+                if vel_max > 0:
+                    struct_line.append("   vel ", style="dim")
+                    vel = None
+                    if ptb and price:
+                        move_usd = price - ptb
+                        side = state.bet_side
+                        if not side and up_ask > 0 and down_ask > 0:
+                            side = "Up" if up_ask <= down_ask else "Down"
+                        if side:
+                            adverse = -move_usd if side == "Up" else move_usd
+                            elapsed_min = max(elapsed, 1) / 60.0
+                            vel = (adverse / elapsed_min) if adverse > 0 else 0.0
+                    if vel is None:
+                        struct_line.append("--", style="dim")
+                    else:
+                        vel_ok = vel <= vel_max + 1e-9
+                        struct_line.append(
+                            f"${vel:.0f}/m",
+                            style="bold green" if vel_ok else "bold red",
+                        )
             parts.append(struct_line)
 
             parts.append(Text(""))
@@ -579,7 +616,29 @@ class Dashboard:
                 return ""
             st = state.structure or getattr(sim, "structure", None) or "—"
             rsi = state.rsi if state.rsi is not None else getattr(sim, "rsi", None)
-            return f" · now {st}" + (f" RSI {rsi:.0f}" if rsi is not None else " RSI —")
+            bit = f" · now {st}" + (f" RSI {rsi:.0f}" if rsi is not None else " RSI —")
+            if sim.strategy == "scalp":
+                atr_max = getattr(sim, "atr_max_usd", 0) or 0
+                if atr_max > 0:
+                    atr_now = getattr(sim, "atr_24h", None)
+                    bit += f" ATR ${atr_now:.0f}" if atr_now is not None else " ATR —"
+                vel_max = getattr(sim, "velocity_max_usd_per_min", 0) or 0
+                if vel_max > 0 and self.ptb and self.price:
+                    move_usd = self.price - self.ptb
+                    side = state.bet_side
+                    if not side and self.up_ask > 0 and self.down_ask > 0:
+                        side = "Up" if self.up_ask <= self.down_ask else "Down"
+                    if side:
+                        adverse = -move_usd if side == "Up" else move_usd
+                        elapsed = max(0.0, time.time() - state.window_start)
+                        elapsed_min = max(elapsed, 1) / 60.0
+                        vel = (adverse / elapsed_min) if adverse > 0 else 0.0
+                        bit += f" vel ${vel:.0f}/m"
+                    else:
+                        bit += " vel —"
+                elif vel_max > 0:
+                    bit += " vel —"
+            return bit
 
         if sim.strategy == "leader":
             skip = (f"leader: first to {sim.leader_at_cents}¢ → buy at ask ≤{sim.leader_max_cents}¢, "
