@@ -1,25 +1,25 @@
 # Decision log — scalp
 
-## 2026-10-21 — IMPLEMENTED: TP60 + split entry + adverse-delta caps
+## 2026-10-29 — IMPLEMENTED: full formula all durations (30→TP60 + signed Δ)
 
-Live scalp defaults changed (user decision, after corrected replay showed the
-40/60 ladder and unfiltered entries losing on 5m/15m):
+Live scalp defaults (same formula, scaled by duration):
 
-- **Exit back to TP60** for the first half; `--scalp-ladder-first` default now 0.
-- **Split entry** (`--scalp-split-entry 20`, `--scalp-split-target 40`): half the
-  size at ask ≤30¢ (TP60), the other half only if the ask falls to ≤20¢ (TP40).
-  Second half must fill within the same first-third entry deadline.
-- **Adverse-delta caps** (`--scalp-delta-cap`, auto by duration): skip the entry
-  when this window's BTC move against the bought side already exceeds
-  **$20 (5m) / $50 (15m) / $200 (60m)** at entry. Cap derivation (settle EV by
-  adverse-USD-at-fill bins): 5m positive only < $20; 15m positive only < $50;
-  60m $150–200 recovered 4/5 vs ≥$200 only 1/5 (n small, $200 is provisional).
+| Duration | Warm-up | Entry window (elapsed) | Δ cap (signed adverse) | Entry | TP |
+|----------|---------|------------------------|------------------------|-------|-----|
+| 5m | 0–5s | 5s–30s inclusive | $20 | ask ≤30¢ taker | limit 60¢ maker |
+| 15m | 0–15s | 15s–120s inclusive | $50 | ask ≤30¢ taker | limit 60¢ maker |
+| 60m | 0–60s | 60s–300s inclusive | $200 | ask ≤30¢ taker | limit 60¢ maker |
 
-Corrected-replay expectations at implementation (windows replay, limit fills):
-proposed pooled −$70.40 / PF 0.85 vs current −$200.00 / PF 0.78 — i.e. mainly a
-loss-reduction change; only 60m was PF > 1 (1.25). Forward results on live logs
-should be compared against these numbers, not the pre-fix inflated ones.
+- **Split / ladder off** by default (`--scalp-split-entry 0`, `--scalp-ladder-first 0`).
+- **Signed adverse Δ:** `±(btc_move_pct/100)×PTB` against the side we would buy; skip if `> cap`.
+- **TP** is a resting limit (maker fee path in `compute_result`); entry lifts the ask (taker).
+- Miss TP → hold to settle.
 
+Replay (60m, touch-based, maker TP / taker entry fees): Δ filter improves TP60; TP70 scored higher on that sample but live default stays **TP60** unless `--scalp-target 70`.
+
+## 2026-10-21 — IMPLEMENTED (superseded): TP60 + split + Δ caps
+
+Prior live defaults (split 20→40 on 5m/15m, first-third cancel). Replaced by 2026-10-29.
 
 
 ## 2026-10-20 — Skip scalp fades of a hard 60m hour (>$150)?

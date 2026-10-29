@@ -654,12 +654,16 @@ class Dashboard:
                     if getattr(sim, "stop_cents", 0) > 0 else "no stop")
             time_x = (f"exit @{sim.exit_left_seconds}s left"
                       if getattr(sim, "exit_left_seconds", 0) > 0 else "no time exit")
+            enter_lo = getattr(sim, "enter_after_seconds", 0) or 0
+            enter_hi = getattr(sim, "entry_elapsed_max", 0) or 0
+            window = (f"entry {format_time(enter_lo)}–{format_time(enter_hi)} in"
+                      if enter_hi > 0 else "entry open")
             cancel = (f"cancel @{format_time(sim.cancel_left_seconds())} left"
                       if sim.cancel_left_pct > 0 else "no cancel")
             savior = (sim.savior_summary_text() if hasattr(sim, "savior_summary_text")
                       else "no savior")
             skip = (f"buy ≤{sim.entry_cents}¢ when structure={need} · {rsi_gate} · {tp} · "
-                    f"{time_x} · {stop} · {cancel} · {savior}")
+                    f"{window} · {time_x} · {stop} · {cancel} · {savior}")
             skip += _struct_rsi_now()
             if state is not None and state.action:
                 skip += f" · {state.action}"

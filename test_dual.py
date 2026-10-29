@@ -7,7 +7,11 @@ import tempfile
 from logs import MARKET_CSV_HEADER, format_lowest_cents, log_to_csv
 from predict_feed import best_asks, book_depth, get_current_active_slug, window_bounds
 from sim import TRADES_HEADER, last_capital_after, last_reloaded_total
-from strategies import AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim
+from strategies import (
+    AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim,
+    SCALP_DELTA_CAP_USD, SCALP_ENTRY_ELAPSED,
+    scalp_cancel_left_pct, scalp_delta_cap_usd, scalp_warmup_seconds,
+)
 
 START = 1791813600  # 14:00 UTC = 10am ET
 END = START + 300
@@ -182,18 +186,76 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
               cancel_left_pct=0.0, savior_left_pct=0.0, savior_force_left_pct=20.0,
               savior_stall_pct=10.0, duration=5, rsi_zone=None,
               split_entry=0, split_target=40, delta_cap=0.0,
-              trade_hours=None, hours_offset=0.0):
-    """Structure gate / cancel / savior / RSI zone / split / delta cap off by default so fill/TP tests stay place-on-cheap."""
+              trade_hours=None, hours_offset=0.0, enter_after_seconds=0):
+    """Warm-up / cancel / structure / savior / RSI / split / delta off by default so fill/TP tests stay place-on-cheap."""
     return ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                     entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
                     split_entry_cents=split_entry, split_target_cents=split_target,
                     delta_cap_usd=delta_cap,
                     trade_hours=trade_hours, hours_utc_offset=hours_offset,
-                    exit_left_seconds=exit_left,
+                    exit_left_seconds=exit_left, enter_after_seconds=enter_after_seconds,
                     stop_cents=stop, stop_confirm_seconds=confirm,
                     require_structure=require_structure, cancel_left_pct=cancel_left_pct,
                     savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
                     savior_stall_pct=savior_stall_pct, rsi_zone=rsi_zone)
+
+
+def test_scalp_timing_defaults(tmp):
+    """All-in 30→60; warm-up + inclusive entry window + Δ caps scale with duration."""
+    assert SCALP_ENTRY_ELAPSED == {5: 30, 15: 120, 60: 300}
+    assert SCALP_DELTA_CAP_USD == {5: 20.0, 15: 50.0, 60: 200.0}
+    assert scalp_warmup_seconds(5) == 5
+    assert scalp_warmup_seconds(15) == 15
+    assert scalp_warmup_seconds(60) == 60
+    assert abs(scalp_cancel_left_pct(5) - 90.0) < 1e-9
+    assert abs(scalp_cancel_left_pct(15) - 780 / 900 * 100) < 1e-9
+    assert abs(scalp_cancel_left_pct(60) - 3300 / 3600 * 100) < 1e-9
+    for dur, cancel_left in ((5, 270), (15, 780), (60, 3300)):
+        sim = ScalpSim("btc", dur, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default")
+        assert sim.entry_cents == 30 and sim.target_cents == 60
+        assert sim.split_entry_cents == 0 and not sim.split_active
+        assert sim.enter_after_seconds == scalp_warmup_seconds(dur)
+        assert sim.entry_elapsed_max == SCALP_ENTRY_ELAPSED[dur]
+        assert abs(sim.cancel_left_seconds() - cancel_left) < 1e-6
+        assert scalp_delta_cap_usd(dur) == SCALP_DELTA_CAP_USD[dur]
+
+
+def test_scalp_warmup_blocks_then_allows(tmp):
+    """5m warm-up: cheap ask in first 5s ignored; after warm-up it fills."""
+    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=5, cancel_left_pct=90.0)
+    # entry_elapsed_max still 30 from duration=5
+    state = run_window(sim, [
+        (2, 0.25, 0.76),   # during warm-up — no entry
+        (10, 0.25, 0.76),  # gated window — enter
+        (100, 0.40, 0.80),
+    ])
+    assert state.action == "scalp"
+    assert state.up_fill_price == 0.25
+    assert any("buy_up_25c" in n for n in state.notes)
+
+
+def test_scalp_entry_allowed_at_inclusive_max(tmp):
+    """5m: entry at exactly elapsed=30s (inclusive end of window) is allowed."""
+    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=5, cancel_left_pct=90.0)
+    assert sim.entry_elapsed_max == 30
+    state = run_window(sim, [
+        (2, 0.50, 0.51),
+        (30, 0.25, 0.76),  # exactly entry_elapsed_max — allowed
+        (100, 0.40, 0.80),
+    ])
+    assert state.action == "scalp" and state.up_fill_price == 0.25
+
+
+def test_scalp_hard_cutoff_blocks_late_entry(tmp):
+    """5m: cheap ask after entry_elapsed_max (elapsed>30) does not enter."""
+    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=5, cancel_left_pct=90.0)
+    state = run_window(sim, [
+        (2, 0.50, 0.51),
+        (40, 0.25, 0.76),  # elapsed 40s > 30s window — blocked
+        (100, 0.40, 0.80),
+    ])
+    assert state.action != "scalp" or state.up_fill_price is None
+    assert not state.orders or all(not o.filled for o in state.orders)
 
 
 def test_scalp_hold_to_settle(tmp):
@@ -1470,6 +1532,10 @@ def main():
             test_dual_skew_holds_stranded_by_default,
             test_dual_waits_when_delta_loud,
             test_quiet_dual_waits_for_enter_after,
+            test_scalp_timing_defaults,
+            test_scalp_warmup_blocks_then_allows,
+            test_scalp_entry_allowed_at_inclusive_max,
+            test_scalp_hard_cutoff_blocks_late_entry,
             test_scalp_hold_to_settle,
             test_scalp_tp,
             test_scalp_ladder_partial_then_settle,

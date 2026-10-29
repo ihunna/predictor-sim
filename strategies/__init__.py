@@ -3,6 +3,19 @@ from .against import AgainstSim
 from .combo import STRATEGIES, ComboSim
 from .dual import DualSim
 from .leader import LeaderSim
-from .scalp import ScalpSim
+from .scalp import (
+    ScalpSim,
+    SCALP_DELTA_CAP_USD,
+    SCALP_ENTRY_ELAPSED,
+    scalp_cancel_left_pct,
+    scalp_delta_cap_usd,
+    scalp_entry_elapsed_max,
+    scalp_warmup_seconds,
+)
 
-__all__ = ["AgainstSim", "ComboSim", "DualSim", "LeaderSim", "ScalpSim", "STRATEGIES"]
+__all__ = [
+    "AgainstSim", "ComboSim", "DualSim", "LeaderSim", "ScalpSim", "STRATEGIES",
+    "SCALP_DELTA_CAP_USD", "SCALP_ENTRY_ELAPSED",
+    "scalp_cancel_left_pct", "scalp_delta_cap_usd",
+    "scalp_entry_elapsed_max", "scalp_warmup_seconds",
+]

@@ -1,38 +1,66 @@
-"""Cheap-side scalper: buy a dumped ask, take profit on bid, else full loss at settle.
+"""Cheap-side scalper: buy a dumped ask, take-profit on a resting limit, else settle.
 
-Same optional structure gate as dual (default: off — trade any structure; log struct/RSI).
-Optional ``rsi_zone=(lo, hi)`` skips entries outside that RSI band (off by default).
-Default path (2026-10-21): split entry — half the size at ask ≤30¢ (take-profit at
-bid ≥60¢), the other half only if the ask falls to ≤20¢ (take-profit at bid ≥40¢).
-Optional ``delta_cap_usd`` skips entries when this window's BTC move against the
-bought side already exceeds the cap at entry (per-duration caps via run.py).
-Optional ``target_cents=0`` / time-exit / confirmed stop via flags. Bid is inferred as
-``1 − other_ask`` (same convention as against take-profit).
+Default formula (all durations, 2026-10-29), scaled by window length:
+
+* **Warm-up:** no entry while ``elapsed < duration`` seconds (5s / 15s / 60s).
+* **Entry window:** ``warmup ≤ elapsed ≤ entry_max`` (30s / 120s / 300s).
+* **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
+* **Δ filter:** signed adverse USD from PTB/start ≤ cap ($20 / $50 / $200).
+* **Exit:** resting limit TP at bid ≥60¢ (maker); miss → hold to settle.
+
+Optional split/ladder/RSI/structure/time-exit/stop via flags. Bid = ``1 − other_ask``.
 """
 
 from logs import format_time
 from sim import BaseSim, Order
 
+# Inclusive end of the active entry window (seconds into the window).
+SCALP_ENTRY_ELAPSED = {5: 30, 15: 120, 60: 300}
+# Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
+SCALP_DELTA_CAP_USD = {5: 20.0, 15: 50.0, 60: 200.0}
+
+
+def scalp_warmup_seconds(duration):
+    """Warm-up blackout length in seconds (1s per minute of contract)."""
+    return int(duration)
+
+
+def scalp_entry_elapsed_max(duration):
+    """Last elapsed second where a new entry is still allowed (inclusive)."""
+    return SCALP_ENTRY_ELAPSED.get(int(duration), max(30, int(duration) * 5))
+
+
+def scalp_cancel_left_pct(duration):
+    """Percent of window *left* at hard cutoff (for unfilled cancel + entry gate)."""
+    window = int(duration) * 60
+    elapsed_max = scalp_entry_elapsed_max(duration)
+    return (window - elapsed_max) / window * 100.0
+
+
+def scalp_delta_cap_usd(duration):
+    """Default signed adverse-Δ cap for this duration (0 if unknown)."""
+    return float(SCALP_DELTA_CAP_USD.get(int(duration), 0.0))
+
 
 class ScalpSim(BaseSim):
-    """Single-side: buy ask≤entry, ladder TP 40/60 by default; miss holds and loses."""
+    """Single-side: buy ask≤entry, TP60 all-in by default; miss holds and loses."""
 
     strategy = "scalp"
     start_mode = "against"
 
     def __init__(self, *args, entry_cents=30, target_cents=60, ladder_first_cents=0,
-                 split_entry_cents=20, split_target_cents=40, delta_cap_usd=0.0,
-                 exit_left_seconds=0,
+                 split_entry_cents=0, split_target_cents=40, delta_cap_usd=0.0,
+                 exit_left_seconds=0, enter_after_seconds=None,
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
                  rsi_zone=None, **kwargs):
-        # Block new entries / cancel unfilled once cancel_left_pct of the window is left
-        # (default 67% ≈ first third only; 60m scalp: late ≤30¢ fills rarely reach TP60).
-        kwargs.setdefault("cancel_left_pct", 67.0)
+        duration = args[1] if len(args) > 1 else kwargs.get("duration", 5)
+        # Unfilled cancel after the gated entry window (5m/15m/60m → 30s/2m/5m).
+        kwargs.setdefault("cancel_left_pct", scalp_cancel_left_pct(duration))
         kwargs.setdefault("stop_loss_seconds", 0)
         kwargs.setdefault("max_prev_move_pct", 0.0)
         super().__init__(*args, **kwargs)
         self.entry_cents = max(1, int(entry_cents))
-        # 0 = hold to settle (no take-profit); final TP default 60 from replay
+        # 0 = hold to settle (no take-profit); default TP 60 (resting limit / maker).
         self.target_cents = max(0, int(target_cents))
         if self.target_cents > 0 and self.target_cents <= self.entry_cents:
             self.target_cents = self.entry_cents + 1
@@ -50,10 +78,18 @@ class ScalpSim(BaseSim):
             self.split_entry_cents < self.split_target_cents <= max(self.target_cents, self.split_entry_cents + 1)
         ):
             self.split_target_cents = self.entry_cents + 10
-        # Skip entries when this window's move against the bought side exceeds
-        # this many USD at entry (0 = off). Set per duration by run.py.
+        # Signed adverse-Δ skip (USD) at entry; 0 = off. Defaults via run.py / SCALP_DELTA_CAP_USD.
         self.delta_cap_usd = max(0.0, float(delta_cap_usd or 0.0))
         self.exit_left_seconds = max(0, int(exit_left_seconds))
+        # Warm-up: no entries while elapsed < this (default = duration minutes as seconds).
+        if enter_after_seconds is None:
+            enter_after_seconds = scalp_warmup_seconds(self.duration)
+        self.enter_after_seconds = max(0, int(enter_after_seconds))
+        # Inclusive entry deadline; if cancel/gate is off, allow the full window.
+        self.entry_elapsed_max = (
+            self.duration * 60 if self.cancel_left_pct <= 0
+            else scalp_entry_elapsed_max(self.duration)
+        )
         # 0 = no hard stop
         self.stop_cents = max(0, int(stop_cents if stop_cents is not None else 0))
         self.stop_confirm_seconds = max(0, int(stop_confirm_seconds))
@@ -113,6 +149,12 @@ class ScalpSim(BaseSim):
             rsi_gate = f"RSI {lo:g}–{hi:g}"
         else:
             rsi_gate = "any RSI"
+        warmup = (
+            f"enter {format_time(self.enter_after_seconds)}–"
+            f"{format_time(self.entry_elapsed_max)} in"
+            if self.enter_after_seconds > 0 or self.entry_elapsed_max > 0
+            else "enter from open"
+        )
         cancel = (
             f"cancel no-fill @{format_time(self.cancel_left_seconds())} left"
             if self.cancel_left_pct > 0 else "never cancel"
@@ -120,9 +162,21 @@ class ScalpSim(BaseSim):
         savior = self.savior_summary_text()
         return (
             f"Scalp: buy ask≤{self.entry_cents}¢ x{self.contracts} when {gate}, {rsi_gate}, "
-            f"{tp}, {time_x}, {stop}, {cancel}, {savior} "
+            f"{tp}, {warmup}, {time_x}, {stop}, {cancel}, {savior} "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
+
+    def _elapsed(self, state, remaining):
+        return (state.window_end - state.window_start) - remaining
+
+    def _in_entry_window(self, state, remaining):
+        """Warm-up ≤ elapsed ≤ entry_elapsed_max (inclusive), matching the frozen formula."""
+        elapsed = self._elapsed(state, remaining)
+        if self.enter_after_seconds > 0 and elapsed < self.enter_after_seconds:
+            return False
+        if elapsed > self.entry_elapsed_max:
+            return False
+        return True
 
     @staticmethod
     def _bid(side, up_ask, down_ask):
@@ -149,10 +203,9 @@ class ScalpSim(BaseSim):
     def _first_orders(self, state, remaining, up_ask, down_ask):
         if self.place_at is not None and remaining > self.place_at:
             return []
-        if self.exit_left_seconds > 0 and remaining <= self.exit_left_seconds:
+        if not self._in_entry_window(state, remaining):
             return []
-        # Same duration-relative cutoff as dual cancel: no new buys once that much is left.
-        if self.cancel_left_pct > 0 and remaining <= self.cancel_left_seconds():
+        if self.exit_left_seconds > 0 and remaining <= self.exit_left_seconds:
             return []
         if not self._entry_ok(state):
             return []
@@ -226,7 +279,7 @@ class ScalpSim(BaseSim):
 
     def _maybe_split_entry(self, state, remaining, up_ask, down_ask):
         """Second half: buy the rest only if the ask falls to the split level
-        while entries are still open (same first-third deadline as the entry)."""
+        while entries are still open (same hard-cutoff deadline as the entry)."""
         if not self.split_active or not getattr(state, "scalp_split_pending", False):
             return
         if state.stop_time_left is not None or not state.bet_side:
@@ -238,7 +291,7 @@ class ScalpSim(BaseSim):
             state.scalp_split_pending = False
             state.notes.append("split_second_cancelled_first_exited")
             return
-        if self.cancel_left_pct > 0 and remaining <= self.cancel_left_seconds():
+        if not self._in_entry_window(state, remaining):
             state.scalp_split_pending = False
             state.notes.append("split_second_expired_unfilled")
             return

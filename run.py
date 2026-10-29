@@ -17,7 +17,10 @@ import time
 
 from logs import format_lowest_cents, format_time, log_to_csv
 from sim import last_capital_after, last_reloaded_total
-from strategies import AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES
+from strategies import (
+    AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES,
+    scalp_cancel_left_pct, scalp_delta_cap_usd, scalp_warmup_seconds,
+)
 from predict_feed import (
     API_RATE_PER_MINUTE,
     CHAINLINK_FEED_IDS,
@@ -456,8 +459,9 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: 5m/15m split ½≤30→TP60 + ½≤20→TP40; 60m all-in ≤30→TP60; "
-                             "adverse-delta cap per duration (see --scalp-delta-cap). "
+                             "scalp: all-in ≤30→TP60 (limit); warm-up then gated entry "
+                             "(5m 5–30s / 15m 15–120s / 60m 60–300s); "
+                             "signed adverse-Δ cap $20/$50/$200 (see --scalp-delta-cap). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -510,8 +514,9 @@ def parse_args():
                              "(default 0 = off; try 0.10 to skip after wild prior windows).")
 
     parser.add_argument("--enter-after", type=int, default=None, metavar="SECONDS_IN",
-                        help="Dual: earliest seconds into the window to place "
-                             "(default 0 = from open; legacy, unused when structure gate alone).")
+                        help="Earliest seconds into the window to place. "
+                             "Dual default 0 (from open). Scalp default = warm-up "
+                             "(5s / 15s / 60s by duration).")
     parser.add_argument("--quiet-max-pct", type=float, default=None, metavar="PCT",
                         help="Dual: max |BTC Δ from PTB| (default 0 = off; dual ignores Δ unless set).")
 
@@ -538,15 +543,15 @@ def parse_args():
                         help="Scalp (legacy, split off): sell half the position when bid reaches this "
                              "first ladder level, the rest at --scalp-target (default 0 = off; "
                              "all-in at target).")
-    parser.add_argument("--scalp-split-entry", type=int, default=None, metavar="CENTS",
+    parser.add_argument("--scalp-split-entry", type=int, default=0, metavar="CENTS",
                         help="Scalp: buy the second half only when the ask falls to this. "
-                             "Default: 20 on 5m/15m, 0 (off = all-in) on 60m. Pass 0 to force all-in.")
+                             "Default 0 = all-in at --scalp-entry (legacy split: pass 20).")
     parser.add_argument("--scalp-split-target", type=int, default=40, metavar="CENTS",
                         help="Scalp: take-profit for the second (deep) half (default 40; ignored if split off).")
     parser.add_argument("--scalp-delta-cap", type=float, default=None, metavar="USD",
-                        help="Scalp: skip entries when this window's BTC move against the bought "
-                             "side already exceeds this many USD at entry. Default: auto by "
-                             "duration (5m $20, 15m $50, 60m $200); 0 = off.")
+                        help="Scalp: skip when signed adverse BTC move from PTB (USD) against "
+                             "the bought side exceeds this at entry. Default: 5m $20 / 15m $50 / "
+                             "60m $200; 0 = off.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",
@@ -578,10 +583,11 @@ def parse_args():
     parser.add_argument("--stop-loss-min", type=int, default=3, metavar="CENTS",
                         help="Only sell when the losing side's bid is at least this many cents; below that keep "
                              "the contracts and log it (default 3; 0 = any price).")
-    parser.add_argument("--cancel-left-pct", type=float, default=67.0,
-                        help="Cancel unfilled / block new scalp entries when this much of the window is left, "
-                             "in percent (default 67 ≈ first third only: ~3:20 left of 5m, ~10:00 of 15m, "
-                             "~40:00 of 60m; 0 = never). From 60m scalp replay: late fills rarely hit TP.")
+    parser.add_argument("--cancel-left-pct", type=float, default=None,
+                        help="Cancel unfilled when this much of the window is left, in percent. "
+                             "Dual default 67 ≈ first third. Scalp default matches entry window "
+                             "end (5m/15m/60m → first 30s/2m/5m). Scalp also gates new entries "
+                             "by elapsed warm-up…entry-max. 0 = never cancel.")
     parser.add_argument("--savior-left-pct", type=float, default=0.0,
                         help="On one-sided holds, arm savior when this much of the window is left "
                              "(default 0 = off). E.g. 50 ≈ half window left. Locks a cut from winner strength; "
@@ -662,9 +668,18 @@ def main():
         raise SystemExit("--max-prev-move-pct must be >= 0")
     move_scale = MOVE_SCALE.get(duration, (duration / 5) ** 0.5)
     if args.enter_after is None:
-        args.enter_after = 0 if strategy == "dual" else int(duration * 60 * DUAL_ENTER_AFTER_PCT)
+        if strategy == "scalp":
+            args.enter_after = scalp_warmup_seconds(duration)
+        elif strategy == "dual":
+            args.enter_after = 0
+        else:
+            args.enter_after = int(duration * 60 * DUAL_ENTER_AFTER_PCT)
     if args.quiet_max_pct is None:
         args.quiet_max_pct = 0.0 if strategy == "dual" else round(DUAL_QUIET_MAX_PCT_5M * move_scale, 4)
+    if args.cancel_left_pct is None:
+        args.cancel_left_pct = (
+            scalp_cancel_left_pct(duration) if strategy == "scalp" else 67.0
+        )
     if args.enter_after < 0:
         raise SystemExit("--enter-after must be >= 0")
     if args.enter_after >= duration * 60:
@@ -687,24 +702,24 @@ def main():
         args.scalp_entry < args.scalp_ladder_first < args.scalp_target
     ):
         raise SystemExit("--scalp-ladder-first must be 0 (off) or between --scalp-entry and --scalp-target")
-    # Split entry: auto by duration unless explicitly set (60m = all-in TP60).
-    if args.scalp_split_entry is None:
-        args.scalp_split_entry = 0 if duration == 60 else 20
+    # Split entry: default off (all-in 30→60); pass --scalp-split-entry 20 to re-enable.
     if args.scalp_split_entry != 0 and not 0 < args.scalp_split_entry < args.scalp_entry:
         raise SystemExit("--scalp-split-entry must be 0 (off) or below --scalp-entry")
     if args.scalp_split_entry != 0 and args.scalp_target != 0 and not (
         args.scalp_split_entry < args.scalp_split_target < args.scalp_target
     ):
         raise SystemExit("--scalp-split-target must be between --scalp-split-entry and --scalp-target")
-    # Adverse-delta cap: auto per duration unless explicitly set (0 = off).
+    # Signed adverse-Δ cap: auto per duration unless explicitly set (0 = off).
     if args.scalp_delta_cap is None:
-        scalp_delta_cap = {5: 20.0, 15: 50.0, 60: 200.0}.get(duration, 0.0)
+        scalp_delta_cap = scalp_delta_cap_usd(duration)
     elif args.scalp_delta_cap < 0:
         raise SystemExit("--scalp-delta-cap must be >= 0")
     else:
         scalp_delta_cap = float(args.scalp_delta_cap)
     if strategy != "scalp":
         scalp_delta_cap = 0.0
+
+
     rsi_zone = None
     if (args.rsi_zone or "").strip():
         raw = args.rsi_zone.strip().replace(":", "-").replace("–", "-").replace("—", "-")
@@ -802,7 +817,7 @@ def main():
                       strand_exit_seconds=args.strand_exit,
                       allow_balanced=True if args.cheap_ask == 0 else args.balanced_dual)
     elif strategy == "scalp":
-        # Same optional structure gate as dual; no-fill cancel via --cancel-left-pct.
+        # Warm-up + gated entry window; no-fill cancel via --cancel-left-pct.
         scalp_common = dict(common)
         scalp_common["stop_loss_seconds"] = 0
         sim = ScalpSim(*sim_args, **scalp_common, entry_cents=args.scalp_entry,
@@ -811,6 +826,7 @@ def main():
                        split_target_cents=args.scalp_split_target,
                        delta_cap_usd=scalp_delta_cap,
                        exit_left_seconds=args.scalp_exit_left,
+                       enter_after_seconds=args.enter_after,
                        stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm,
                        require_structure=args.dual_structure, rsi_zone=rsi_zone)
     elif strategy == "against":
