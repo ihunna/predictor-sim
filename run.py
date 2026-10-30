@@ -17,11 +17,12 @@ import time
 
 from logs import format_lowest_cents, format_time, log_to_csv
 from sim import last_capital_after, last_reloaded_total
-from btc_atr import HourlyAtr24h
+from btc_atr import ATR_HOURS, HourlyAtr
 from strategies import (
     AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES,
-    SCALP_ATR_MAX_USD, SCALP_VELOCITY_MAX_USD_PER_MIN,
-    scalp_cancel_left_pct, scalp_delta_cap_usd, scalp_warmup_seconds,
+    SCALP_ATR_MAX_USD,
+    scalp_cancel_left_pct, scalp_delta_cap_usd, scalp_velocity_max_usd_per_min,
+    scalp_warmup_seconds,
 )
 from predict_feed import (
     API_RATE_PER_MINUTE,
@@ -355,7 +356,8 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat,
     # Refresh ATR each new scalp window (1B: re-check; fail closed until ready).
     if atr_cache is not None and getattr(sim, "atr_max_usd", 0) > 0:
         atr_cache.refresh()
-        sim.atr_24h = atr_cache.atr
+        sim.atr_6h = atr_cache.atr
+        sim.atr_24h = atr_cache.atr  # back-compat for UI
     skip_reason = "no_ptb" if price_to_beat <= 0 else None
     state = sim.start_window(window_start, window_end, slug, market_id, skip_reason=skip_reason,
                              decision_pending=skip_reason is None)
@@ -409,7 +411,8 @@ def run_window(ui, ws, sim, coin, duration, feed_id, updown_file, price_to_beat,
         ptb = ws.official_prices(market_id)[0] or ws.first_price_from(window_start) or price_to_beat
         btc = ws.latest_price()
         if atr_cache is not None and getattr(sim, "atr_max_usd", 0) > 0:
-            sim.atr_24h = atr_cache.atr
+            sim.atr_6h = atr_cache.atr
+            sim.atr_24h = atr_cache.atr  # back-compat for UI
         sim.on_tick(now, up_ask, down_ask, btc or 0.0, ptb or 0.0)
         # Announce cancel as soon as it fires (all strats that use cancel_left_pct).
         if not saw_cancel and state.cancelled_time_left is not None:
@@ -468,9 +471,9 @@ def parse_args():
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
                              "scalp: all-in ≤30→TP60 (limit); warm-up then gated entry "
-                             "(5m 5–30s / 15m 15–120s / 60m 60–300s); "
-                             "ATR24h≤$350 → velocity≤$60/min → signed adverse-Δ "
-                             "$20/$50/$200 (see --scalp-atr-max / --scalp-velocity-max / "
+                             "(5m experimental 120–180s / 15m 180–300s / 60m 60–300s); "
+                             "ATR6h≤$350 → velocity ≤$20/$30/$60/min → signed adverse-Δ "
+                             "$10/$50/$200 (see --scalp-atr-max / --scalp-velocity-max / "
                              "--scalp-delta-cap). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
@@ -560,15 +563,15 @@ def parse_args():
                         help="Scalp: take-profit for the second (deep) half (default 40; ignored if split off).")
     parser.add_argument("--scalp-delta-cap", type=float, default=None, metavar="USD",
                         help="Scalp: skip when signed adverse BTC move from PTB (USD) against "
-                             "the bought side exceeds this at entry. Default: 5m $20 / 15m $50 / "
+                             "the bought side exceeds this at entry. Default: 5m $10 / 15m $50 / "
                              "60m $200; 0 = off.")
     parser.add_argument("--scalp-atr-max", type=float, default=None, metavar="USD",
-                        help="Scalp: skip entry while 24h hourly ATR (Binance 1h mean high−low) "
+                        help="Scalp: skip entry while 6h hourly ATR (Binance 1h mean high−low) "
                              f"exceeds this, or ATR not ready. Default {SCALP_ATR_MAX_USD:.0f}; 0 = off. "
                              "Fail skips only this window (re-check next).")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this. "
-                             f"Default {SCALP_VELOCITY_MAX_USD_PER_MIN:.0f}; 0 = off. "
+                             "Default: 5m $20 / 15m $30 / 60m $60 per min; 0 = off. "
                              "Favorable/flat adverse always passes.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
@@ -741,7 +744,7 @@ def main():
     else:
         scalp_atr_max = float(args.scalp_atr_max)
     if args.scalp_velocity_max is None:
-        scalp_velocity_max = SCALP_VELOCITY_MAX_USD_PER_MIN
+        scalp_velocity_max = scalp_velocity_max_usd_per_min(duration)
     elif args.scalp_velocity_max < 0:
         raise SystemExit("--scalp-velocity-max must be >= 0")
     else:
@@ -886,9 +889,9 @@ def main():
 
     atr_cache = None
     if strategy == "scalp" and getattr(sim, "atr_max_usd", 0) > 0:
-        atr_cache = HourlyAtr24h(coin=coin)
+        atr_cache = HourlyAtr(coin=coin, hours=ATR_HOURS)
         atr_cache.seed_background()
-        print(f"[atr] seeding Binance 1h ATR24h for {coin.upper()} (gate ≤${sim.atr_max_usd:.0f})")
+        print(f"[atr] seeding Binance 1h ATR{ATR_HOURS}h for {coin.upper()} (gate ≤${sim.atr_max_usd:.0f})")
 
     print("[ws] Initializing Predict.fun socket...")
     ws = PredictWS(feed_id)

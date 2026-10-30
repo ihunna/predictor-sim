@@ -1,4 +1,4 @@
-"""24-hour hourly ATR for scalp macro vol gate (Binance 1h high−low mean)."""
+"""6-hour hourly ATR for scalp macro vol gate (Binance 1h high−low mean)."""
 from __future__ import annotations
 
 import json
@@ -19,19 +19,26 @@ COIN_SYMBOLS = {
     "bnb": "BNBUSDT",
 }
 
+# Rolling window of completed 1h candles used for the scalp ATR gate.
+ATR_HOURS = 6
+
 
 def binance_symbol(coin: str) -> str:
     return COIN_SYMBOLS.get((coin or "btc").strip().lower(), "BTCUSDT")
 
 
-def atr_24h_from_ranges(ranges_usd: list[float]) -> float | None:
+def atr_from_ranges(ranges_usd: list[float]) -> float | None:
     """Mean of hourly high−low ranges; None if empty."""
     if not ranges_usd:
         return None
     return sum(ranges_usd) / len(ranges_usd)
 
 
-def fetch_hourly_ranges(symbol: str = "BTCUSDT", hours: int = 24, timeout: float = 10.0) -> list[float]:
+# Back-compat alias used by older tests/imports.
+atr_24h_from_ranges = atr_from_ranges
+
+
+def fetch_hourly_ranges(symbol: str = "BTCUSDT", hours: int = ATR_HOURS, timeout: float = 10.0) -> list[float]:
     """Completed 1h candle (high−low) for the last ``hours`` hours from Binance."""
     limit = max(1, int(hours))
     last_err: Exception | None = None
@@ -57,15 +64,18 @@ def fetch_hourly_ranges(symbol: str = "BTCUSDT", hours: int = 24, timeout: float
     return []
 
 
-def fetch_atr_24h(coin: str = "btc", hours: int = 24) -> float | None:
+def fetch_atr(coin: str = "btc", hours: int = ATR_HOURS) -> float | None:
     ranges = fetch_hourly_ranges(binance_symbol(coin), hours=hours)
-    return atr_24h_from_ranges(ranges)
+    return atr_from_ranges(ranges)
 
 
-class HourlyAtr24h:
-    """Thread-safe cache of rolling 24h hourly ATR; seed/refresh from Binance."""
+fetch_atr_24h = fetch_atr  # back-compat
 
-    def __init__(self, coin: str = "btc", hours: int = 24, refresh_seconds: float = 3600.0):
+
+class HourlyAtr:
+    """Thread-safe cache of rolling hourly ATR; seed/refresh from Binance."""
+
+    def __init__(self, coin: str = "btc", hours: int = ATR_HOURS, refresh_seconds: float = 3600.0):
         self.coin = (coin or "btc").strip().lower()
         self.hours = int(hours)
         self.refresh_seconds = float(refresh_seconds)
@@ -101,7 +111,7 @@ class HourlyAtr24h:
             if not force and self._atr is not None and age < self.refresh_seconds:
                 return self._atr
         try:
-            value = fetch_atr_24h(self.coin, hours=self.hours)
+            value = fetch_atr(self.coin, hours=self.hours)
             with self._lock:
                 self._atr = value
                 self._fetched_at = time.time()
@@ -114,3 +124,7 @@ class HourlyAtr24h:
 
     def seed_background(self) -> None:
         threading.Thread(target=self.refresh, kwargs={"force": True}, daemon=True).start()
+
+
+# Back-compat alias for run.py / older imports.
+HourlyAtr24h = HourlyAtr

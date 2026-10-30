@@ -1,32 +1,28 @@
 # Decision log — scalp
 
+## 2026-10-30 — IMPLEMENTED: scaled time / velocity / Δ (15m+60m primary; 5m experimental)
+
+| Duration | Warm-up | Entry window (elapsed) | Velocity $/min | Δ cap | Notes |
+|----------|---------|------------------------|----------------|-------|-------|
+| 5m | 0–120s | 120s–180s inclusive | $20 | $10 | Experimental; historically negative EV |
+| 15m | 0–180s | 180s–300s inclusive | $30 | $50 | Prime; lock out after 300s (convexity decay) |
+| 60m | 0–60s | 60s–300s inclusive | $60 | $200 | Unchanged timing |
+
+After time gate + ask ≤30¢ (side chosen):
+
+1. **ATR6h ≤ $350** — Binance 1h mean(high−low) over 6 completed hours; fail closed; per-window skip (1B).
+2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit; favorable/flat always passes.
+3. **Signed adverse Δ** — ≤ per-duration cap.
+
+Skip reasons: `atr_high`, `velocity_high`, `adverse_delta`. Entry ≤30¢ taker → TP60 maker; miss → settle.
+
 ## 2026-10-29 — IMPLEMENTED: ATR + velocity + adverse Δ pipeline
 
-After time gate + ask ≤30¢ (side chosen), ordered entry gates (all durations):
-
-1. **ATR24h ≤ $350** (`--scalp-atr-max`; 0 = off) — Binance `BTCUSDT` 1h mean(high−low) over 24 completed hours. Fail closed if ATR missing. **(1B)** skip only current window entries; re-check next window (no day-long pause).
-2. **Adverse velocity ≤ $60/min** (`--scalp-velocity-max`; 0 = off) — `adverse_usd / max(elapsed_s,1)/60`. Favorable/flat (`adverse ≤ 0`) always passes. **(2A)** same for 5m/15m/60m.
-3. **Signed adverse Δ ≤ cap** (`--scalp-delta-cap`) — $20 / $50 / $200 by duration (unchanged).
-
-Skip reasons logged: `atr_high`, `velocity_high`, `adverse_delta`.
+Superseded timing/velocity/Δ scaling by 2026-10-30. ATR window shortened 24h→6h same day.
 
 ## 2026-10-29 — IMPLEMENTED: full formula all durations (30→TP60 + signed Δ)
 
-Live scalp defaults (same formula, scaled by duration):
-
-| Duration | Warm-up | Entry window (elapsed) | Δ cap (signed adverse) | Entry | TP |
-|----------|---------|------------------------|------------------------|-------|-----|
-| 5m | 0–5s | 5s–30s inclusive | $20 | ask ≤30¢ taker | limit 60¢ maker |
-| 15m | 0–15s | 15s–120s inclusive | $50 | ask ≤30¢ taker | limit 60¢ maker |
-| 60m | 0–60s | 60s–300s inclusive | $200 | ask ≤30¢ taker | limit 60¢ maker |
-
-- **Split / ladder off** by default (`--scalp-split-entry 0`, `--scalp-ladder-first 0`).
-- **Signed adverse Δ:** `±(btc_move_pct/100)×PTB` against the side we would buy; skip if `> cap`.
-- **TP** is a resting limit (maker fee path in `compute_result`); entry lifts the ask (taker).
-- Miss TP → hold to settle.
-- Vol gates (ATR / velocity) layered on top — see entry above.
-
-Replay (60m, touch-based, maker TP / taker entry fees): Δ filter improves TP60; TP70 scored higher on that sample but live default stays **TP60** unless `--scalp-target 70`.
+Superseded by 2026-10-30 scaled windows. Prior: 5m 5–30s / 15m 15–120s / 60m 60–300s; Δ $20/$50/$200; velocity flat $60/min.
 
 ## 2026-10-21 — IMPLEMENTED (superseded): TP60 + split + Δ caps
 

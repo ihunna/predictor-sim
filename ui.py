@@ -418,8 +418,10 @@ class Dashboard:
             ):
                 atr_max = getattr(sim, "atr_max_usd", 0) or 0
                 if atr_max > 0:
-                    atr_now = getattr(sim, "atr_24h", None)
-                    struct_line.append("   ATR ", style="dim")
+                    atr_now = getattr(sim, "atr_6h", None)
+                    if atr_now is None:
+                        atr_now = getattr(sim, "atr_24h", None)
+                    struct_line.append("   ATR6h ", style="dim")
                     if atr_now is None:
                         struct_line.append("--", style="bold red")
                     else:
@@ -620,8 +622,10 @@ class Dashboard:
             if sim.strategy == "scalp":
                 atr_max = getattr(sim, "atr_max_usd", 0) or 0
                 if atr_max > 0:
-                    atr_now = getattr(sim, "atr_24h", None)
-                    bit += f" ATR ${atr_now:.0f}" if atr_now is not None else " ATR —"
+                    atr_now = getattr(sim, "atr_6h", None)
+                    if atr_now is None:
+                        atr_now = getattr(sim, "atr_24h", None)
+                    bit += f" ATR6h ${atr_now:.0f}" if atr_now is not None else " ATR6h —"
                 vel_max = getattr(sim, "velocity_max_usd_per_min", 0) or 0
                 if vel_max > 0 and self.ptb and self.price:
                     move_usd = self.price - self.ptb
@@ -748,9 +752,11 @@ class Dashboard:
             else:
                 prices = f"≤{sim.entry_cents}¢→{sim.target_cents}¢"
             if getattr(sim, "atr_max_usd", 0):
-                atr_now = getattr(sim, "atr_24h", None)
+                atr_now = getattr(sim, "atr_6h", None)
+                if atr_now is None:
+                    atr_now = getattr(sim, "atr_24h", None)
                 atr_bit = f"${atr_now:.0f}" if atr_now is not None else "?"
-                prices += f" · ATR≤${sim.atr_max_usd:.0f} ({atr_bit})"
+                prices += f" · ATR6h≤${sim.atr_max_usd:.0f} ({atr_bit})"
             if getattr(sim, "velocity_max_usd_per_min", 0):
                 prices += f" · vel≤${sim.velocity_max_usd_per_min:.0f}/m"
             if getattr(sim, "delta_cap_usd", 0):
