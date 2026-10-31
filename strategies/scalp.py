@@ -1,29 +1,29 @@
 """Cheap-side scalper: buy a dumped ask, take-profit on a resting limit, else settle.
 
-Default formula (2026-10-30), scaled by window length:
+Tightened cross-timeframe defaults (2026-10-31):
 
-* **Warm-up / entry:** 5m experimental 120–180s; 15m 180–300s; 60m 60–300s.
+* **Time gate:** 5m 10–45s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Vol pipeline (after ask):** ATR6h ≤ $350 → adverse velocity ≤ $20/$30/$60 per min →
-  signed adverse Δ ≤ cap ($10 / $50 / $200).
+* **Vol pipeline:** ATR6h ≤ $60/$125/$250 → velocity ≤ $20/$30/$60 per min →
+  signed adverse Δ ≤ $10/$50/$200.
 * **Exit:** resting limit TP at bid ≥60¢ (maker); miss → hold to settle.
 
-5m is experimental (historically negative EV); prefer 15m/60m. Bid = ``1 − other_ask``.
+Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
 """
 
 from logs import format_time
 from sim import BaseSim, Order
 
 # Warm-up blackout end / first allowed entry elapsed (seconds into the window).
-SCALP_WARMUP_SECONDS = {5: 120, 15: 180, 60: 60}
+SCALP_WARMUP_SECONDS = {5: 10, 15: 15, 60: 61}
 # Inclusive end of the active entry window (seconds into the window).
-SCALP_ENTRY_ELAPSED = {5: 180, 15: 300, 60: 300}
+SCALP_ENTRY_ELAPSED = {5: 45, 15: 150, 60: 300}
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 50.0, 60: 200.0}
 # Adverse velocity caps ($/min of elapsed) by duration.
 SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 20.0, 15: 30.0, 60: 60.0}
-# Macro ATR default (0 = off).
-SCALP_ATR_MAX_USD = 350.0
+# 6h hourly ATR max (USD) by duration; 5m uses top of the $50–$60 tightened band.
+SCALP_ATR_MAX_USD = {5: 60.0, 15: 125.0, 60: 250.0}
 
 
 def scalp_warmup_seconds(duration):
@@ -53,6 +53,11 @@ def scalp_velocity_max_usd_per_min(duration):
     return float(SCALP_VELOCITY_MAX_USD_PER_MIN.get(int(duration), 0.0))
 
 
+def scalp_atr_max_usd(duration):
+    """Default ATR6h max (USD) for this duration (0 if unknown)."""
+    return float(SCALP_ATR_MAX_USD.get(int(duration), 0.0))
+
+
 class ScalpSim(BaseSim):
     """Single-side: buy ask≤entry, TP60 all-in by default; miss holds and loses."""
 
@@ -66,7 +71,7 @@ class ScalpSim(BaseSim):
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
                  rsi_zone=None, **kwargs):
         duration = args[1] if len(args) > 1 else kwargs.get("duration", 5)
-        # Unfilled cancel after the gated entry window (5m→180s / 15m→300s / 60m→300s).
+        # Unfilled cancel after the gated entry window (5m→45s / 15m→150s / 60m→300s).
         kwargs.setdefault("cancel_left_pct", scalp_cancel_left_pct(duration))
         kwargs.setdefault("stop_loss_seconds", 0)
         kwargs.setdefault("max_prev_move_pct", 0.0)
@@ -92,9 +97,9 @@ class ScalpSim(BaseSim):
             self.split_target_cents = self.entry_cents + 10
         # Signed adverse-Δ skip (USD) at entry; 0 = off. Defaults via run.py / SCALP_DELTA_CAP_USD.
         self.delta_cap_usd = max(0.0, float(delta_cap_usd or 0.0))
-        # Layer 1: 6h hourly ATR max (USD); 0 = off. None → live default.
+        # Layer 1: 6h hourly ATR max (USD); 0 = off. None → per-duration default.
         if atr_max_usd is None:
-            atr_max_usd = SCALP_ATR_MAX_USD
+            atr_max_usd = scalp_atr_max_usd(self.duration)
         self.atr_max_usd = max(0.0, float(atr_max_usd or 0.0))
         self.atr_6h: float | None = None  # set by run.py / tests
         # Back-compat alias for older UI/tests that still read atr_24h.

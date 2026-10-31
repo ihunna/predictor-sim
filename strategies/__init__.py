@@ -10,6 +10,7 @@ from .scalp import (
     SCALP_ENTRY_ELAPSED,
     SCALP_VELOCITY_MAX_USD_PER_MIN,
     SCALP_WARMUP_SECONDS,
+    scalp_atr_max_usd,
     scalp_cancel_left_pct,
     scalp_delta_cap_usd,
     scalp_entry_elapsed_max,
@@ -21,7 +22,7 @@ __all__ = [
     "AgainstSim", "ComboSim", "DualSim", "LeaderSim", "ScalpSim", "STRATEGIES",
     "SCALP_ATR_MAX_USD", "SCALP_DELTA_CAP_USD", "SCALP_ENTRY_ELAPSED",
     "SCALP_VELOCITY_MAX_USD_PER_MIN", "SCALP_WARMUP_SECONDS",
-    "scalp_cancel_left_pct", "scalp_delta_cap_usd",
+    "scalp_atr_max_usd", "scalp_cancel_left_pct", "scalp_delta_cap_usd",
     "scalp_entry_elapsed_max", "scalp_velocity_max_usd_per_min",
     "scalp_warmup_seconds",
 ]

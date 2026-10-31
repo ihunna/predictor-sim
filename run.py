@@ -20,9 +20,8 @@ from sim import last_capital_after, last_reloaded_total
 from btc_atr import ATR_HOURS, HourlyAtr
 from strategies import (
     AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES,
-    SCALP_ATR_MAX_USD,
-    scalp_cancel_left_pct, scalp_delta_cap_usd, scalp_velocity_max_usd_per_min,
-    scalp_warmup_seconds,
+    scalp_atr_max_usd, scalp_cancel_left_pct, scalp_delta_cap_usd,
+    scalp_velocity_max_usd_per_min, scalp_warmup_seconds,
 )
 from predict_feed import (
     API_RATE_PER_MINUTE,
@@ -470,10 +469,11 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: all-in ≤30→TP60 (limit); warm-up then gated entry "
-                             "(5m experimental 120–180s / 15m 180–300s / 60m 60–300s); "
-                             "ATR6h≤$350 → velocity ≤$20/$30/$60/min → signed adverse-Δ "
-                             "$10/$50/$200 (see --scalp-atr-max / --scalp-velocity-max / "
+                             "scalp: all-in ≤30→TP60 (limit); tightened time gate "
+                             "(5m 10–45s / 15m 15–150s / 60m 61–300s); "
+                             "ATR6h≤$60/$125/$250 → velocity ≤$20/$30/$60/min → "
+                             "signed adverse-Δ $10/$50/$200 "
+                             "(see --scalp-atr-max / --scalp-velocity-max / "
                              "--scalp-delta-cap). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
@@ -567,8 +567,8 @@ def parse_args():
                              "60m $200; 0 = off.")
     parser.add_argument("--scalp-atr-max", type=float, default=None, metavar="USD",
                         help="Scalp: skip entry while 6h hourly ATR (Binance 1h mean high−low) "
-                             f"exceeds this, or ATR not ready. Default {SCALP_ATR_MAX_USD:.0f}; 0 = off. "
-                             "Fail skips only this window (re-check next).")
+                             "exceeds this, or ATR not ready. Default: 5m $60 / 15m $125 / "
+                             "60m $250; 0 = off. Fail skips only this window (re-check next).")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this. "
                              "Default: 5m $20 / 15m $30 / 60m $60 per min; 0 = off. "
@@ -738,7 +738,7 @@ def main():
     else:
         scalp_delta_cap = float(args.scalp_delta_cap)
     if args.scalp_atr_max is None:
-        scalp_atr_max = SCALP_ATR_MAX_USD
+        scalp_atr_max = scalp_atr_max_usd(duration)
     elif args.scalp_atr_max < 0:
         raise SystemExit("--scalp-atr-max must be >= 0")
     else:

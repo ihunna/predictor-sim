@@ -1,20 +1,26 @@
 # Decision log — scalp
 
-## 2026-10-30 — IMPLEMENTED: scaled time / velocity / Δ (15m+60m primary; 5m experimental)
+## 2026-10-31 — IMPLEMENTED: fully tightened cross-timeframe gates
 
-| Duration | Warm-up | Entry window (elapsed) | Velocity $/min | Δ cap | Notes |
-|----------|---------|------------------------|----------------|-------|-------|
-| 5m | 0–120s | 120s–180s inclusive | $20 | $10 | Experimental; historically negative EV |
-| 15m | 0–180s | 180s–300s inclusive | $30 | $50 | Prime; lock out after 300s (convexity decay) |
-| 60m | 0–60s | 60s–300s inclusive | $60 | $200 | Unchanged timing |
+| Duration | Lifespan | Time gate (elapsed) | ~% life | ATR6h max | Velocity $/min | Δ cap |
+|----------|----------|---------------------|---------|-----------|----------------|-------|
+| 5m | 300s | 10s–45s | 15% | $60 (band $50–$60) | $20 | $10 |
+| 15m | 900s | 15s–150s | 16.6% | $125 | $30 | $50 |
+| 60m | 3600s | 61s–300s | 8.3% | $250 | $60 | $200 |
 
-After time gate + ask ≤30¢ (side chosen):
+Rationale: 5m ultra-tight (skip open-spread noise, hard-stop before 1m); 15m early book imbalance before mid-window chop; 60m isolate minute-1–5 mean-reversion.
 
-1. **ATR6h ≤ $350** — Binance 1h mean(high−low) over 6 completed hours; fail closed; per-window skip (1B).
-2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit; favorable/flat always passes.
+After time gate + ask ≤30¢:
+
+1. **ATR6h** — Binance 1h mean(high−low) over 6h ≤ per-duration max; fail closed; per-window skip.
+2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit.
 3. **Signed adverse Δ** — ≤ per-duration cap.
 
 Skip reasons: `atr_high`, `velocity_high`, `adverse_delta`. Entry ≤30¢ taker → TP60 maker; miss → settle.
+
+## 2026-10-30 — IMPLEMENTED: scaled time / velocity / Δ (superseded)
+
+Prior: 5m 120–180s / 15m 180–300s / 60m 60–300s; ATR flat $350. Replaced by 2026-10-31 tightened gates.
 
 ## 2026-10-29 — IMPLEMENTED: ATR + velocity + adverse Δ pipeline
 
