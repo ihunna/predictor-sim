@@ -6,7 +6,7 @@
 |----------|----------|---------------------|---------|-----------|----------------|-------|
 | 5m | 300s | 10s–45s | 15% | $60 (band $50–$60) | $20 | $10 |
 | 15m | 900s | 15s–150s | 16.6% | $125 | $30 | $50 |
-| 60m | 3600s | 61s–300s | 8.3% | $250 | $60 | $200 |
+| 60m | 3600s | 61s–300s | 8.3% | $350 (was $250; raised 2026-11-03 — $250–350 still reversed) | $60 | $200 |
 
 Rationale: 5m ultra-tight (skip open-spread noise, hard-stop before 1m); 15m early book imbalance before mid-window chop; 60m isolate minute-1–5 mean-reversion.
 
@@ -16,7 +16,11 @@ After time gate + ask ≤30¢:
 2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit.
 3. **Signed adverse Δ** — ≤ per-duration cap.
 
-Skip reasons: `atr_high`, `velocity_high`, `adverse_delta`. Entry ≤30¢ taker → TP60 maker; miss → settle.
+Skip reasons: `atr_high`, `velocity_high`, `adverse_delta`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
+
+## 2026-11-03 — IMPLEMENTED: 60m TP70 + ATR ≤ $350
+
+Live-matched 60m (ATR≤$350, 61–300s, 30¢ touch): TP70 beat TP60 (same hit rate lately, +~$0.55 EV/trade). ATR ceiling raised $250→$350 so mid-vol reversals are not blocked.
 
 ## 2026-10-30 — IMPLEMENTED: scaled time / velocity / Δ (superseded)
 

@@ -21,7 +21,7 @@ from btc_atr import ATR_HOURS, HourlyAtr
 from strategies import (
     AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim, STRATEGIES,
     scalp_atr_max_usd, scalp_cancel_left_pct, scalp_delta_cap_usd,
-    scalp_velocity_max_usd_per_min, scalp_warmup_seconds,
+    scalp_target_cents, scalp_velocity_max_usd_per_min, scalp_warmup_seconds,
 )
 from predict_feed import (
     API_RATE_PER_MINUTE,
@@ -469,12 +469,12 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: all-in ≤30→TP60 (limit); tightened time gate "
+                             "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); tightened time gate "
                              "(5m 10–45s / 15m 15–150s / 60m 61–300s); "
-                             "ATR6h≤$60/$125/$250 → velocity ≤$20/$30/$60/min → "
+                             "ATR6h≤$60/$125/$350 → velocity ≤$20/$30/$60/min → "
                              "signed adverse-Δ $10/$50/$200 "
                              "(see --scalp-atr-max / --scalp-velocity-max / "
-                             "--scalp-delta-cap). "
+                             "--scalp-delta-cap / --scalp-target). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -549,9 +549,10 @@ def parse_args():
 
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
                         help="Scalp: buy when a side's ask is at or below this (default 30; 5m replay).")
-    parser.add_argument("--scalp-target", type=int, default=60, metavar="CENTS",
-                        help="Scalp: final take-profit when bid reaches this (default 60; 0 = hold to settle; "
-                             "miss without TP = −entry at settle).")
+    parser.add_argument("--scalp-target", type=int, default=None, metavar="CENTS",
+                        help="Scalp: final take-profit when bid reaches this. "
+                             "Default: 5m/15m 60¢ / 60m 70¢; 0 = hold to settle; "
+                             "miss without TP = −entry at settle.")
     parser.add_argument("--scalp-ladder-first", type=int, default=0, metavar="CENTS",
                         help="Scalp (legacy, split off): sell half the position when bid reaches this "
                              "first ladder level, the rest at --scalp-target (default 0 = off; "
@@ -568,7 +569,7 @@ def parse_args():
     parser.add_argument("--scalp-atr-max", type=float, default=None, metavar="USD",
                         help="Scalp: skip entry while 6h hourly ATR (Binance 1h mean high−low) "
                              "exceeds this, or ATR not ready. Default: 5m $60 / 15m $125 / "
-                             "60m $250; 0 = off. Fail skips only this window (re-check next).")
+                             "60m $350; 0 = off. Fail skips only this window (re-check next).")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this. "
                              "Default: 5m $20 / 15m $30 / 60m $60 per min; 0 = off. "
@@ -717,17 +718,21 @@ def main():
         raise SystemExit(f"--strand-exit must be between 0 and {duration * 60 - 1}")
     if not 1 <= args.scalp_entry <= 99:
         raise SystemExit("--scalp-entry must be between 1 and 99")
-    if args.scalp_target != 0 and not args.scalp_entry < args.scalp_target <= 99:
+    if args.scalp_target is None:
+        scalp_target = scalp_target_cents(duration)
+    else:
+        scalp_target = int(args.scalp_target)
+    if scalp_target != 0 and not args.scalp_entry < scalp_target <= 99:
         raise SystemExit("--scalp-target must be 0 (hold) or > --scalp-entry and ≤99")
-    if args.scalp_ladder_first != 0 and args.scalp_target != 0 and not (
-        args.scalp_entry < args.scalp_ladder_first < args.scalp_target
+    if args.scalp_ladder_first != 0 and scalp_target != 0 and not (
+        args.scalp_entry < args.scalp_ladder_first < scalp_target
     ):
         raise SystemExit("--scalp-ladder-first must be 0 (off) or between --scalp-entry and --scalp-target")
-    # Split entry: default off (all-in 30→60); pass --scalp-split-entry 20 to re-enable.
+    # Split entry: default off (all-in at entry→target); pass --scalp-split-entry 20 to re-enable.
     if args.scalp_split_entry != 0 and not 0 < args.scalp_split_entry < args.scalp_entry:
         raise SystemExit("--scalp-split-entry must be 0 (off) or below --scalp-entry")
-    if args.scalp_split_entry != 0 and args.scalp_target != 0 and not (
-        args.scalp_split_entry < args.scalp_split_target < args.scalp_target
+    if args.scalp_split_entry != 0 and scalp_target != 0 and not (
+        args.scalp_split_entry < args.scalp_split_target < scalp_target
     ):
         raise SystemExit("--scalp-split-target must be between --scalp-split-entry and --scalp-target")
     # Signed adverse-Δ cap: auto per duration unless explicitly set (0 = off).
@@ -855,7 +860,7 @@ def main():
         scalp_common = dict(common)
         scalp_common["stop_loss_seconds"] = 0
         sim = ScalpSim(*sim_args, **scalp_common, entry_cents=args.scalp_entry,
-                       target_cents=args.scalp_target, ladder_first_cents=args.scalp_ladder_first,
+                       target_cents=scalp_target, ladder_first_cents=args.scalp_ladder_first,
                        split_entry_cents=args.scalp_split_entry,
                        split_target_cents=args.scalp_split_target,
                        delta_cap_usd=scalp_delta_cap,

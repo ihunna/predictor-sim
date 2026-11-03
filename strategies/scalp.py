@@ -4,9 +4,9 @@ Tightened cross-timeframe defaults (2026-10-31):
 
 * **Time gate:** 5m 10–45s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Vol pipeline:** ATR6h ≤ $60/$125/$250 → velocity ≤ $20/$30/$60 per min →
+* **Vol pipeline:** ATR6h ≤ $60/$125/$350 → velocity ≤ $20/$30/$60 per min →
   signed adverse Δ ≤ $10/$50/$200.
-* **Exit:** resting limit TP at bid ≥60¢ (maker); miss → hold to settle.
+* **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
 """
@@ -23,7 +23,9 @@ SCALP_DELTA_CAP_USD = {5: 10.0, 15: 50.0, 60: 200.0}
 # Adverse velocity caps ($/min of elapsed) by duration.
 SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 20.0, 15: 30.0, 60: 60.0}
 # 6h hourly ATR max (USD) by duration; 5m uses top of the $50–$60 tightened band.
-SCALP_ATR_MAX_USD = {5: 60.0, 15: 125.0, 60: 250.0}
+SCALP_ATR_MAX_USD = {5: 60.0, 15: 125.0, 60: 350.0}
+# Resting take-profit (¢); 60m raised to 70 after live-matched replay (2026-11-03).
+SCALP_TARGET_CENTS = {5: 60, 15: 60, 60: 70}
 
 
 def scalp_warmup_seconds(duration):
@@ -58,13 +60,18 @@ def scalp_atr_max_usd(duration):
     return float(SCALP_ATR_MAX_USD.get(int(duration), 0.0))
 
 
+def scalp_target_cents(duration):
+    """Default resting TP (¢) for this duration."""
+    return int(SCALP_TARGET_CENTS.get(int(duration), 60))
+
+
 class ScalpSim(BaseSim):
-    """Single-side: buy ask≤entry, TP60 all-in by default; miss holds and loses."""
+    """Single-side: buy ask≤entry, TP all-in by default; miss holds and loses."""
 
     strategy = "scalp"
     start_mode = "against"
 
-    def __init__(self, *args, entry_cents=30, target_cents=60, ladder_first_cents=0,
+    def __init__(self, *args, entry_cents=30, target_cents=None, ladder_first_cents=0,
                  split_entry_cents=0, split_target_cents=40, delta_cap_usd=0.0,
                  atr_max_usd=None, velocity_max_usd_per_min=None,
                  exit_left_seconds=0, enter_after_seconds=None,
@@ -77,7 +84,9 @@ class ScalpSim(BaseSim):
         kwargs.setdefault("max_prev_move_pct", 0.0)
         super().__init__(*args, **kwargs)
         self.entry_cents = max(1, int(entry_cents))
-        # 0 = hold to settle (no take-profit); default TP 60 (resting limit / maker).
+        # 0 = hold to settle (no take-profit); None → per-duration default (60m=70).
+        if target_cents is None:
+            target_cents = scalp_target_cents(self.duration)
         self.target_cents = max(0, int(target_cents))
         if self.target_cents > 0 and self.target_cents <= self.entry_cents:
             self.target_cents = self.entry_cents + 1

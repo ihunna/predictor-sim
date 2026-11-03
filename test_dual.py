@@ -11,9 +11,9 @@ from btc_atr import ATR_HOURS, atr_from_ranges
 from strategies import (
     AgainstSim, ComboSim, DualSim, LeaderSim, ScalpSim,
     SCALP_ATR_MAX_USD, SCALP_DELTA_CAP_USD, SCALP_ENTRY_ELAPSED,
-    SCALP_VELOCITY_MAX_USD_PER_MIN, SCALP_WARMUP_SECONDS,
+    SCALP_TARGET_CENTS, SCALP_VELOCITY_MAX_USD_PER_MIN, SCALP_WARMUP_SECONDS,
     scalp_atr_max_usd, scalp_cancel_left_pct, scalp_delta_cap_usd,
-    scalp_velocity_max_usd_per_min, scalp_warmup_seconds,
+    scalp_target_cents, scalp_velocity_max_usd_per_min, scalp_warmup_seconds,
 )
 
 START = 1791813600  # 14:00 UTC = 10am ET
@@ -215,7 +215,8 @@ def test_scalp_timing_defaults(tmp):
     assert SCALP_ENTRY_ELAPSED == {5: 45, 15: 150, 60: 300}
     assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 50.0, 60: 200.0}
     assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 20.0, 15: 30.0, 60: 60.0}
-    assert SCALP_ATR_MAX_USD == {5: 60.0, 15: 125.0, 60: 250.0}
+    assert SCALP_ATR_MAX_USD == {5: 60.0, 15: 125.0, 60: 350.0}
+    assert SCALP_TARGET_CENTS == {5: 60, 15: 60, 60: 70}
     assert ATR_HOURS == 6
     assert scalp_warmup_seconds(5) == 10
     assert scalp_warmup_seconds(15) == 15
@@ -225,7 +226,8 @@ def test_scalp_timing_defaults(tmp):
     assert abs(scalp_cancel_left_pct(60) - 3300 / 3600 * 100) < 1e-9
     for dur, cancel_left in ((5, 255), (15, 750), (60, 3300)):
         sim = ScalpSim("btc", dur, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default")
-        assert sim.entry_cents == 30 and sim.target_cents == 60
+        assert sim.entry_cents == 30 and sim.target_cents == SCALP_TARGET_CENTS[dur]
+        assert sim.target_cents == scalp_target_cents(dur)
         assert sim.split_entry_cents == 0 and not sim.split_active
         assert sim.enter_after_seconds == scalp_warmup_seconds(dur)
         assert sim.entry_elapsed_max == SCALP_ENTRY_ELAPSED[dur]
