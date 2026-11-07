@@ -215,7 +215,7 @@ def test_scalp_timing_defaults(tmp):
     assert SCALP_ENTRY_ELAPSED == {5: 45, 15: 150, 60: 300}
     assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 50.0, 60: 200.0}
     assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 20.0, 15: 30.0, 60: 60.0}
-    assert SCALP_ATR_MAX_USD == {5: 60.0, 15: 125.0, 60: 350.0}
+    assert SCALP_ATR_MAX_USD == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_TARGET_CENTS == {5: 60, 15: 60, 60: 70}
     assert ATR_HOURS == 6
     assert scalp_warmup_seconds(5) == 10
@@ -262,7 +262,7 @@ def test_scalp_atr_gate(tmp):
 
 
 def test_scalp_velocity_gate(tmp):
-    """High adverse early in window blocks; same adverse later may pass."""
+    """High adverse early blocks; same adverse only later (no prior trip) may pass."""
     # −$30 vs PTB buying Up; at elapsed=20s → 90$/min > 60; at 60s → 30$/min ≤ 60.
     early = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
     state = run_window(early, [
@@ -277,6 +277,21 @@ def test_scalp_velocity_gate(tmp):
         (60, 0.25, 0.76),
     ], btc=99_970.0, ptb=100_000.0)
     assert state2.action == "scalp" and state2.contracts("Up") == 8
+
+
+def test_scalp_velocity_latch(tmp):
+    """Once velocity trips on a cheap ask, later cooled velocity still cannot enter."""
+    # Same −$30 adverse: 20s → 90$/min trips latch; 60s → 30$/min would pass without latch.
+    sim = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),  # velocity_high → latch
+        (60, 0.25, 0.76),  # cooled $/min but window no longer quiet
+    ], btc=99_970.0, ptb=100_000.0)
+    assert state.action != "scalp" and state.contracts("Up") == 0
+    assert state.velocity_latched
+    assert "velocity_high" in state.notes
+    assert "velocity_latched" in state.notes
 
 
 def test_scalp_gate_order_atr_before_delta(tmp):
@@ -1608,6 +1623,7 @@ def main():
             test_atr_from_ranges,
             test_scalp_atr_gate,
             test_scalp_velocity_gate,
+            test_scalp_velocity_latch,
             test_scalp_gate_order_atr_before_delta,
             test_scalp_warmup_blocks_then_allows,
             test_scalp_entry_allowed_at_inclusive_max,

@@ -4,19 +4,37 @@
 
 | Duration | Lifespan | Time gate (elapsed) | ~% life | ATR6h max | Velocity $/min | Δ cap |
 |----------|----------|---------------------|---------|-----------|----------------|-------|
-| 5m | 300s | 10s–45s | 15% | $60 (band $50–$60) | $20 | $10 |
-| 15m | 900s | 15s–150s | 16.6% | $125 | $30 | $50 |
-| 60m | 3600s | 61s–300s | 8.3% | $350 (was $250; raised 2026-11-03 — $250–350 still reversed) | $60 | $200 |
+| 5m | 300s | 10s–45s | 15% | **off** (was $60) | $20 | $10 |
+| 15m | 900s | 15s–150s | 16.6% | **off** (was $125) | $30 | $50 |
+| 60m | 3600s | 61s–300s | 8.3% | **off** (was $350) | $60 | $200 |
 
-Rationale: 5m ultra-tight (skip open-spread noise, hard-stop before 1m); 15m early book imbalance before mid-window chop; 60m isolate minute-1–5 mean-reversion.
+Rationale: 5m ultra-tight (skip open-spread noise, hard-stop before 1m); 15m early book imbalance before mid-window chop; 60m isolate minute-1–5 mean-reversion. ATR paused 2026-11-07.
 
 After time gate + ask ≤30¢:
 
-1. **ATR6h** — Binance 1h mean(high−low) over 6h ≤ per-duration max; fail closed; per-window skip.
-2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit.
+1. **ATR6h** — paused (default 0); code path kept for `--scalp-atr-max`.
+2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit; **one breach latches the window** (2026-11-07).
 3. **Signed adverse Δ** — ≤ per-duration cap.
 
-Skip reasons: `atr_high`, `velocity_high`, `adverse_delta`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
+Skip reasons: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
+
+## 2026-11-07 — IMPLEMENTED: pause ATR gate (default 0)
+
+Live-matched 60m with time + vel≤$60 latch + Δ + TP70: **ATR off** n=54 WR 59% EV +$0.39
++$21 vs ATR≤$350 n=34 WR 59% EV +$0.38 +$13. Macro ATR was cutting volume, not adding
+edge; ≤$250 was worse (WR 46%, −$). Defaults `SCALP_ATR_MAX_USD` → 0 all durations.
+Re-enable with `--scalp-atr-max` (prior caps 60/125/350). Running-away detection stays
+on velocity (+ latch) and Δ.
+
+## 2026-11-07 — IMPLEMENTED: velocity window latch
+
+Once adverse velocity exceeds the per-duration cap on a cheap (≤30¢) ask, the window
+stays blocked for the rest of that window (`velocity_latched`) — a stalled knife that
+later cools under $/min must not be treated as quiet.
+
+Live-matched 60m (in-gate fills): best cap remains **$60/min**; latch at $60
+blocks the Nov 5 12:00 knife (−$2.12) and does not cut winners in that sample.
+Skip notes: `velocity_high` (trip tick) then `velocity_latched` (later ticks).
 
 ## 2026-11-03 — IMPLEMENTED: 60m TP70 + ATR ≤ $350
 

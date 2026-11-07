@@ -429,6 +429,8 @@ class WindowState:
     maker_fee_bps: int = 0
     taker_fee_bps: int = 0
     notes: list = field(default_factory=list)
+    # Scalp: once adverse velocity exceeds the cap on a cheap ask this window, stay blocked.
+    velocity_latched: bool = False
     # Savior exit (one-sided holds): locked once when remaining first hits savior arm.
     savior_cut_cents: int | None = None
     savior_reason: str = ""

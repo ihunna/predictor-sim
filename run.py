@@ -568,8 +568,9 @@ def parse_args():
                              "60m $200; 0 = off.")
     parser.add_argument("--scalp-atr-max", type=float, default=None, metavar="USD",
                         help="Scalp: skip entry while 6h hourly ATR (Binance 1h mean high−low) "
-                             "exceeds this, or ATR not ready. Default: 5m $60 / 15m $125 / "
-                             "60m $350; 0 = off. Fail skips only this window (re-check next).")
+                             "exceeds this, or ATR not ready. Default: 0 (paused); prior live "
+                             "caps were 5m $60 / 15m $125 / 60m $350. Fail skips only this "
+                             "window (re-check next).")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this. "
                              "Default: 5m $20 / 15m $30 / 60m $60 per min; 0 = off. "

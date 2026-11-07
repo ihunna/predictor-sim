@@ -4,7 +4,8 @@ Tightened cross-timeframe defaults (2026-10-31):
 
 * **Time gate:** 5m 10–45s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Vol pipeline:** ATR6h ≤ $60/$125/$350 → velocity ≤ $20/$30/$60 per min →
+* **Vol pipeline:** ATR6h paused (0; re-enable via --scalp-atr-max) →
+  velocity ≤ $20/$30/$60 per min (latch: one breach → skip rest of window) →
   signed adverse Δ ≤ $10/$50/$200.
 * **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
@@ -22,8 +23,8 @@ SCALP_ENTRY_ELAPSED = {5: 45, 15: 150, 60: 300}
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 50.0, 60: 200.0}
 # Adverse velocity caps ($/min of elapsed) by duration.
 SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 20.0, 15: 30.0, 60: 60.0}
-# 6h hourly ATR max (USD) by duration; 5m uses top of the $50–$60 tightened band.
-SCALP_ATR_MAX_USD = {5: 60.0, 15: 125.0, 60: 350.0}
+# 6h hourly ATR max (USD) by duration; 0 = off. Paused 2026-11-07 (was 60/125/350).
+SCALP_ATR_MAX_USD = {5: 0.0, 15: 0.0, 60: 0.0}
 # Resting take-profit (¢); 60m raised to 70 after live-matched replay (2026-11-03).
 SCALP_TARGET_CENTS = {5: 60, 15: 60, 60: 70}
 
@@ -167,7 +168,7 @@ class ScalpSim(BaseSim):
         if self.atr_max_usd > 0:
             tp += f", ATR6h≤${self.atr_max_usd:.0f}"
         if self.velocity_max_usd_per_min > 0:
-            tp += f", velocity≤${self.velocity_max_usd_per_min:.0f}/min"
+            tp += f", velocity≤${self.velocity_max_usd_per_min:.0f}/min (window latch)"
         if self.delta_cap_usd > 0:
             tp += f", skip if adverse Δ>${self.delta_cap_usd:.0f} at entry"
         if self.trade_hours:
@@ -241,14 +242,20 @@ class ScalpSim(BaseSim):
                 return False
         return True
 
+    def _velocity_trip(self, state, side, remaining):
+        """True if adverse velocity for `side` is over the cap (favorable/flat never trips)."""
+        if self.velocity_max_usd_per_min <= 0:
+            return False
+        adverse = self._adverse_usd(state, side)
+        if adverse is None or adverse <= 0:
+            return False
+        elapsed_min = max(self._elapsed(state, remaining), 1) / 60.0
+        return adverse / elapsed_min > self.velocity_max_usd_per_min + 1e-9
+
     def _first_orders(self, state, remaining, up_ask, down_ask):
         if self.place_at is not None and remaining > self.place_at:
             return []
-        if not self._in_entry_window(state, remaining):
-            return []
         if self.exit_left_seconds > 0 and remaining <= self.exit_left_seconds:
-            return []
-        if not self._entry_ok(state):
             return []
 
         entry = self.entry_cents / 100.0
@@ -257,6 +264,29 @@ class ScalpSim(BaseSim):
             candidates.append(("Up", up_ask))
         if 0 < down_ask <= entry + 1e-9:
             candidates.append(("Down", down_ask))
+
+        # Latch bookkeeping even outside the entry window: cheap ask + vel breach
+        # means this window is not quiet — never enter later when vel "cools".
+        tripped_now = False
+        if candidates and self.velocity_max_usd_per_min > 0:
+            side_chk, _ = min(candidates, key=lambda x: x[1])
+            if self._velocity_trip(state, side_chk, remaining):
+                state.velocity_latched = True
+                tripped_now = True
+
+        if state.velocity_latched:
+            if tripped_now:
+                state.notes.append("velocity_high")
+                state.action_reason = "velocity_high"
+            else:
+                state.notes.append("velocity_latched")
+                state.action_reason = "velocity_latched"
+            return []
+
+        if not self._in_entry_window(state, remaining):
+            return []
+        if not self._entry_ok(state):
+            return []
         if not candidates:
             return []
 
@@ -270,17 +300,8 @@ class ScalpSim(BaseSim):
                 state.action_reason = "atr_high"
                 return []
 
+        # Layer 2 velocity is enforced via the latch above (trip on cheap ask → block).
         adverse = self._adverse_usd(state, side)
-        elapsed_s = self._elapsed(state, remaining)
-
-        # Layer 2 — adverse velocity ($/min of elapsed); favorable/flat always passes.
-        if self.velocity_max_usd_per_min > 0 and adverse is not None and adverse > 0:
-            elapsed_min = max(elapsed_s, 1) / 60.0
-            velocity = adverse / elapsed_min
-            if velocity > self.velocity_max_usd_per_min + 1e-9:
-                state.notes.append("velocity_high")
-                state.action_reason = "velocity_high"
-                return []
 
         # Layer 3 — signed adverse-Δ cap (USD) against the side we would buy.
         if self.delta_cap_usd > 0:
