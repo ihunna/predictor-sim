@@ -709,7 +709,15 @@ class Dashboard:
         elif sim.strategy == "scalp":
             need = getattr(sim, "require_structure", "") or "any"
             zone = getattr(sim, "rsi_zone", None)
-            rsi_gate = (f"RSI {zone[0]:g}–{zone[1]:g}" if zone else "any RSI")
+            if zone:
+                rsi_gate = f"RSI {zone[0]:g}–{zone[1]:g}"
+            elif getattr(sim, "rsi_good_mix", False):
+                rsi_gate = (
+                    f"RSI mix Up<{getattr(sim, 'rsi_mix_up_below', 40):g} / "
+                    f"Down>{getattr(sim, 'rsi_mix_down_above', 60):g}"
+                )
+            else:
+                rsi_gate = "any RSI"
             tp = sim.tp_text() if hasattr(sim, "tp_text") else (
                 f"TP {sim.target_cents}¢" if getattr(sim, "target_cents", 0) > 0 else "hold"
             )

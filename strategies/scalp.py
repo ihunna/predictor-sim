@@ -7,6 +7,8 @@ Tightened cross-timeframe defaults (2026-10-31):
 * **Vol pipeline:** ATR6h paused (0; re-enable via --scalp-atr-max) →
   velocity ≤ $20/$30/$60 per min (latch: one breach → skip rest of window) →
   signed adverse Δ ≤ $10/$50/$200.
+* **RSI good-mix:** buy Up only if RSI<40, buy Down only if RSI>60
+  (unknown RSI skips; --no-scalp-rsi-mix to disable).
 * **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
@@ -27,6 +29,10 @@ SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 20.0, 15: 30.0, 60: 60.0}
 SCALP_ATR_MAX_USD = {5: 0.0, 15: 0.0, 60: 0.0}
 # Resting take-profit (¢); 60m raised to 70 after live-matched replay (2026-11-03).
 SCALP_TARGET_CENTS = {5: 60, 15: 60, 60: 70}
+# Side-aware RSI good-mix (recent window lean): Up only if RSI below, Down only if above.
+SCALP_RSI_MIX_UP_BELOW = 40.0
+SCALP_RSI_MIX_DOWN_ABOVE = 60.0
+SCALP_RSI_GOOD_MIX_DEFAULT = True
 
 
 def scalp_warmup_seconds(duration):
@@ -77,7 +83,8 @@ class ScalpSim(BaseSim):
                  atr_max_usd=None, velocity_max_usd_per_min=None,
                  exit_left_seconds=0, enter_after_seconds=None,
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
-                 rsi_zone=None, **kwargs):
+                 rsi_zone=None, rsi_good_mix=None,
+                 rsi_mix_up_below=None, rsi_mix_down_above=None, **kwargs):
         duration = args[1] if len(args) > 1 else kwargs.get("duration", 5)
         # Unfilled cancel after the gated entry window (5m→45s / 15m→150s / 60m→300s).
         kwargs.setdefault("cancel_left_pct", scalp_cancel_left_pct(duration))
@@ -134,6 +141,16 @@ class ScalpSim(BaseSim):
         self.require_structure = (require_structure or "").strip().lower()
         # None = no RSI gate; else (lo, hi) inclusive, 0–100
         self.rsi_zone = rsi_zone
+        # Side-aware good-mix: Up only if RSI < up_below, Down only if RSI > down_above.
+        if rsi_good_mix is None:
+            rsi_good_mix = SCALP_RSI_GOOD_MIX_DEFAULT
+        self.rsi_good_mix = bool(rsi_good_mix)
+        self.rsi_mix_up_below = float(
+            SCALP_RSI_MIX_UP_BELOW if rsi_mix_up_below is None else rsi_mix_up_below
+        )
+        self.rsi_mix_down_above = float(
+            SCALP_RSI_MIX_DOWN_ABOVE if rsi_mix_down_above is None else rsi_mix_down_above
+        )
 
     @property
     def ladder_active(self):
@@ -189,6 +206,11 @@ class ScalpSim(BaseSim):
         if self.rsi_zone:
             lo, hi = self.rsi_zone
             rsi_gate = f"RSI {lo:g}–{hi:g}"
+        elif self.rsi_good_mix:
+            rsi_gate = (
+                f"RSI mix Up<{self.rsi_mix_up_below:g} / "
+                f"Down>{self.rsi_mix_down_above:g}"
+            )
         else:
             rsi_gate = "any RSI"
         warmup = (
@@ -308,6 +330,22 @@ class ScalpSim(BaseSim):
             if adverse is None or adverse > self.delta_cap_usd + 1e-9:
                 state.notes.append("adverse_delta")
                 state.action_reason = "adverse_delta"
+                return []
+
+        # RSI good-mix: fade recent regime (Up only if oversold lean, Down if overbought).
+        if self.rsi_good_mix:
+            rsi = state.rsi
+            if rsi is None:
+                state.notes.append("rsi_unknown")
+                state.action_reason = "rsi_unknown"
+                return []
+            if side == "Up" and not (rsi < self.rsi_mix_up_below - 1e-12):
+                state.notes.append("rsi_mix")
+                state.action_reason = "rsi_mix"
+                return []
+            if side == "Down" and not (rsi > self.rsi_mix_down_above + 1e-12):
+                state.notes.append("rsi_mix")
+                state.action_reason = "rsi_mix"
                 return []
 
         state.mode = "against"

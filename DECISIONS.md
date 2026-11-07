@@ -16,7 +16,17 @@ After time gate + ask ≤30¢:
 2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit; **one breach latches the window** (2026-11-07).
 3. **Signed adverse Δ** — ≤ per-duration cap.
 
-Skip reasons: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
+Skip reasons: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`, `rsi_mix`, `rsi_unknown`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
+
+**RSI good-mix (2026-11-07, default on):** Up only if RSI&lt;40, Down only if RSI&gt;60.
+
+## 2026-11-07 — IMPLEMENTED: RSI good-mix (with current filters)
+
+Buy **Up** only if RSI &lt; 40; buy **Down** only if RSI &gt; 60; unknown RSI skips.
+On top of time + vel latch + Δ + TP (ATR still paused). Live-matched 60m: n=13 WR 85%
+EV +$0.30 +$3.9 vs filters-only n=50 WR 58% +$5.6 (fewer trades, higher quality).
+Would have blocked 2/4 of the latest losses; not the Nov 5 knife or Sat 00:00.
+Default on; `--no-scalp-rsi-mix` to disable. Skip notes: `rsi_mix`, `rsi_unknown`.
 
 ## 2026-11-07 — IMPLEMENTED: pause ATR gate (default 0)
 

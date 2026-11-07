@@ -585,6 +585,9 @@ def parse_args():
     parser.add_argument("--rsi-zone", default="", metavar="LO-HI",
                         help="Scalp only: enter only when RSI is in this inclusive band, e.g. 70-100. "
                              "Empty (default) = off. Unknown RSI skips when set.")
+    parser.add_argument("--scalp-rsi-mix", action=argparse.BooleanOptionalAction, default=True,
+                        help="Scalp: RSI good-mix — buy Up only if RSI<40, buy Down only if RSI>60 "
+                             "(default on). Unknown RSI skips. --no-scalp-rsi-mix disables.")
     parser.add_argument("--trade-hours", "--scalp-hours", dest="trade_hours", default="",
                         metavar="START-END",
                         help="All strategies: enter only windows starting in this local-time "
@@ -870,7 +873,8 @@ def main():
                        exit_left_seconds=args.scalp_exit_left,
                        enter_after_seconds=args.enter_after,
                        stop_cents=args.scalp_stop, stop_confirm_seconds=args.scalp_stop_confirm,
-                       require_structure=args.dual_structure, rsi_zone=rsi_zone)
+                       require_structure=args.dual_structure, rsi_zone=rsi_zone,
+                       rsi_good_mix=args.scalp_rsi_mix)
     elif strategy == "against":
         sim = AgainstSim(*sim_args, **common, against_min_streak=args.against_min_streak,
                          against_min_move_pct=args.against_min_move, against_max_cents=args.against_max,

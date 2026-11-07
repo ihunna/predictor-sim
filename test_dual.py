@@ -69,6 +69,12 @@ def seed_up_moves(sim, window_start, n=24):
         sim.moves[window_start - i * step] = 0.05
 
 
+def seed_down_moves(sim, window_start, n=24):
+    step = sim.duration * 60
+    for i in range(n, 0, -1):
+        sim.moves[window_start - i * step] = -0.05
+
+
 PTB = 100_000.0
 
 
@@ -190,7 +196,8 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
               savior_stall_pct=10.0, duration=5, rsi_zone=None,
               split_entry=0, split_target=40, delta_cap=0.0,
               atr_max=0.0, velocity_max=0.0, atr_6h=None, atr_24h=None,
-              trade_hours=None, hours_offset=0.0, enter_after_seconds=0):
+              trade_hours=None, hours_offset=0.0, enter_after_seconds=0,
+              rsi_good_mix=False):
     """Warm-up / cancel / structure / savior / RSI / split / delta / ATR / velocity off by default so fill/TP tests stay place-on-cheap."""
     sim = ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                    entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
@@ -202,7 +209,8 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
                    stop_cents=stop, stop_confirm_seconds=confirm,
                    require_structure=require_structure, cancel_left_pct=cancel_left_pct,
                    savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
-                   savior_stall_pct=savior_stall_pct, rsi_zone=rsi_zone)
+                   savior_stall_pct=savior_stall_pct, rsi_zone=rsi_zone,
+                   rsi_good_mix=rsi_good_mix)
     val = atr_6h if atr_6h is not None else atr_24h
     sim.atr_6h = val
     sim.atr_24h = val
@@ -237,6 +245,8 @@ def test_scalp_timing_defaults(tmp):
         assert scalp_atr_max_usd(dur) == SCALP_ATR_MAX_USD[dur]
         assert sim.atr_max_usd == SCALP_ATR_MAX_USD[dur]
         assert sim.velocity_max_usd_per_min == SCALP_VELOCITY_MAX_USD_PER_MIN[dur]
+        assert sim.rsi_good_mix is True
+        assert sim.rsi_mix_up_below == 40.0 and sim.rsi_mix_down_above == 60.0
 
 
 def test_atr_from_ranges(tmp):
@@ -569,6 +579,34 @@ def test_scalp_rsi_zone(tmp):
     state3 = run_window(sim3, [(0, 0.50, 0.51), (20, 0.25, 0.76)], btc=PTB, ptb=PTB)
     assert state3.rsi is not None and state3.rsi < 70
     assert state3.placed_time_left is None
+
+
+def test_scalp_rsi_good_mix(tmp):
+    """Default-style good-mix: Up only if RSI<40, Down only if RSI>60; unknown skips."""
+    # Unknown RSI → skip
+    sim = scalp_sim(tmp, ladder_first=0, rsi_good_mix=True)
+    state = run_window(sim, [(0, 0.50, 0.51), (20, 0.25, 0.76)], btc=PTB, ptb=PTB)
+    assert state.rsi is None and state.action != "scalp" and "rsi_unknown" in state.notes
+
+    # Down regime (low RSI) + cheap Up → good mix → enter
+    up_ok = scalp_sim(tmp, ladder_first=0, rsi_good_mix=True)
+    seed_down_moves(up_ok, START)
+    state_up = run_window(up_ok, [(0, 0.50, 0.51), (20, 0.25, 0.76)], btc=PTB, ptb=PTB)
+    assert state_up.rsi is not None and state_up.rsi < 40
+    assert state_up.action == "scalp" and state_up.contracts("Up") == 8
+
+    # Up regime (high RSI) + cheap Up → contra → skip
+    up_bad = scalp_sim(tmp, ladder_first=0, rsi_good_mix=True)
+    seed_up_moves(up_bad, START)
+    state_bad = run_window(up_bad, [(0, 0.50, 0.51), (20, 0.25, 0.76)], btc=PTB, ptb=PTB)
+    assert state_bad.rsi is not None and state_bad.rsi > 60
+    assert state_bad.action != "scalp" and "rsi_mix" in state_bad.notes
+
+    # Up regime + cheap Down → good mix → enter
+    dn_ok = scalp_sim(tmp, ladder_first=0, rsi_good_mix=True)
+    seed_up_moves(dn_ok, START)
+    state_dn = run_window(dn_ok, [(0, 0.50, 0.51), (20, 0.76, 0.25)], btc=PTB, ptb=PTB)
+    assert state_dn.action == "scalp" and state_dn.contracts("Down") == 8
 
 
 def test_savior_scales_with_duration(tmp):
@@ -1642,6 +1680,8 @@ def main():
             test_scalp_confirmed_stop,
             test_scalp_time_exit,
             test_scalp_only_when_mixed,
+            test_scalp_rsi_zone,
+            test_scalp_rsi_good_mix,
             test_savior_scales_with_duration,
             test_savior_favorable_locks_and_exits,
             test_savior_adverse_waits_until_force,
