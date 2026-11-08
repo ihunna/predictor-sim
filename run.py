@@ -470,7 +470,7 @@ def parse_args():
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
                              "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); tightened time gate "
-                             "(5m 10–45s / 15m 15–150s / 60m 61–300s); "
+                             "(5m 10–90s / 15m 15–150s / 60m 61–300s); "
                              "ATR6h≤$60/$125/$350 → velocity ≤$20/$30/$60/min → "
                              "signed adverse-Δ $10/$50/$200 "
                              "(see --scalp-atr-max / --scalp-velocity-max / "
@@ -612,7 +612,7 @@ def parse_args():
     parser.add_argument("--cancel-left-pct", type=float, default=None,
                         help="Cancel unfilled when this much of the window is left, in percent. "
                              "Dual default 67 ≈ first third. Scalp default matches entry window "
-                             "end (5m/15m/60m → first 30s/2m/5m). Scalp also gates new entries "
+                             "end (5m/15m/60m → first 90s/2m/5m). Scalp also gates new entries "
                              "by elapsed warm-up…entry-max. 0 = never cancel.")
     parser.add_argument("--savior-left-pct", type=float, default=0.0,
                         help="On one-sided holds, arm savior when this much of the window is left "

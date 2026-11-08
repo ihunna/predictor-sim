@@ -4,11 +4,11 @@
 
 | Duration | Lifespan | Time gate (elapsed) | ~% life | ATR6h max | Velocity $/min | Δ cap |
 |----------|----------|---------------------|---------|-----------|----------------|-------|
-| 5m | 300s | 10s–45s | 15% | **off** (was $60) | $20 | $10 |
+| 5m | 300s | **10s–90s** (was 45s) | 30% | **off** (was $60) | $20 | $10 |
 | 15m | 900s | 15s–150s | 16.6% | **off** (was $125) | $30 | $50 |
 | 60m | 3600s | 61s–300s | 8.3% | **off** (was $350) | $60 | $200 |
 
-Rationale: 5m ultra-tight (skip open-spread noise, hard-stop before 1m); 15m early book imbalance before mid-window chop; 60m isolate minute-1–5 mean-reversion. ATR paused 2026-11-07.
+Rationale: 5m early book (widened 45→90s 2026-11-08); 15m early imbalance; 60m minute-1–5 mean-reversion. ATR paused 2026-11-07.
 
 After time gate + ask ≤30¢:
 
@@ -19,6 +19,12 @@ After time gate + ask ≤30¢:
 Skip reasons: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`, `rsi_mix`, `rsi_unknown`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
 
 **RSI good-mix (2026-11-07, default on):** Up only if RSI&lt;40, Down only if RSI&gt;60.
+
+## 2026-11-08 — IMPLEMENTED: 5m entry gate 10–90s
+
+Live-matched 5m (30¢, vel+latch, Δ, RSI mix): 10–45s n=44 WR84% +$9; **10–90s**
+n=118 WR81% +$21.6 (TP60) / +$24.4 (TP70). EXTRA 46–90s strongly positive. Full-window
+still dilutes. Default `SCALP_ENTRY_ELAPSED[5]` 45→**90** (cancel-left → 210s).
 
 ## 2026-11-07 — IMPLEMENTED: RSI good-mix (with current filters)
 

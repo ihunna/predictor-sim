@@ -2,7 +2,7 @@
 
 Tightened cross-timeframe defaults (2026-10-31):
 
-* **Time gate:** 5m 10–45s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
+* **Time gate:** 5m 10–90s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
 * **Vol pipeline:** ATR6h paused (0; re-enable via --scalp-atr-max) →
   velocity ≤ $20/$30/$60 per min (latch: one breach → skip rest of window) →
@@ -20,7 +20,7 @@ from sim import BaseSim, Order
 # Warm-up blackout end / first allowed entry elapsed (seconds into the window).
 SCALP_WARMUP_SECONDS = {5: 10, 15: 15, 60: 61}
 # Inclusive end of the active entry window (seconds into the window).
-SCALP_ENTRY_ELAPSED = {5: 45, 15: 150, 60: 300}
+SCALP_ENTRY_ELAPSED = {5: 90, 15: 150, 60: 300}  # 5m widened 45→90 (2026-11-08)
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 50.0, 60: 200.0}
 # Adverse velocity caps ($/min of elapsed) by duration.
