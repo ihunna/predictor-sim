@@ -169,14 +169,15 @@ def _api_rate_wait():
             time.sleep(sleep_for)
 
 
-def api_get(path, timeout=10):
+def api_get_full(path, timeout=10):
     """GET ``path`` on the official API (direct). Sets ``last_api_error``.
 
-    Returns parsed JSON ``data`` field on success, or None."""
+    Returns ``(data, cursor)`` on success, or ``(None, None)``. ``cursor`` is the
+    next-page token when the endpoint paginates; otherwise None."""
     global last_api_error
     if not api_configured():
         last_api_error = "no PREDICT_API_KEY (set in .env or pass --api-key)"
-        return None
+        return None, None
     _api_rate_wait()
     headers = {
         "accept": "application/json",
@@ -189,30 +190,38 @@ def api_get(path, timeout=10):
         resp = requests.get(url, headers=headers, timeout=timeout)
     except Exception as e:
         last_api_error = f"API {type(e).__name__}: {e}"
-        return None
+        return None, None
     if resp.status_code == 404:
         last_api_error = None  # not listed yet
-        return None
+        return None, None
     if resp.status_code == 401:
         last_api_error = "API HTTP 401 (bad or missing API key)"
-        return None
+        return None, None
     if resp.status_code == 429:
         last_api_error = "API HTTP 429 (rate limited)"
         time.sleep(1.0)
-        return None
+        return None, None
     if resp.status_code != 200:
         last_api_error = f"API HTTP {resp.status_code}"
-        return None
+        return None, None
     try:
         body = resp.json()
     except Exception as e:
         last_api_error = f"API JSON {type(e).__name__}: {e}"
-        return None
+        return None, None
     if not body.get("success", True):
         last_api_error = f"API error: {body.get('message') or body.get('error') or body}"
-        return None
+        return None, None
     last_api_error = None
-    return body.get("data")
+    return body.get("data"), body.get("cursor")
+
+
+def api_get(path, timeout=10):
+    """GET ``path`` on the official API (direct). Sets ``last_api_error``.
+
+    Returns parsed JSON ``data`` field on success, or None."""
+    data, _cursor = api_get_full(path, timeout=timeout)
+    return data
 
 
 def api_category_by_slug(slug):
