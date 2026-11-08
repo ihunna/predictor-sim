@@ -21,11 +21,16 @@ END = START + 300
 
 
 def run_window(sim, ticks, start=START, end=END, btc=None, ptb=None):
-    """ticks: list of (seconds_into_window, up_ask, down_ask). Optional flat btc/ptb for quiet gate."""
+    """ticks: (elapsed, up, down) or (elapsed, up, down, btc). Optional flat btc/ptb."""
     sim.start_window(start, end, f"btc-updown-5m-{start}", "1", now=start)
-    for offset, up, down in ticks:
+    for tick in ticks:
+        if len(tick) == 4:
+            offset, up, down, tick_btc = tick
+        else:
+            offset, up, down = tick
+            tick_btc = btc
         sim.on_tick(start + offset, up, down,
-                    btc if btc is not None else 0.0,
+                    tick_btc if tick_btc is not None else 0.0,
                     ptb if ptb is not None else 0.0)
     return sim.finish_window()
 
@@ -222,7 +227,7 @@ def test_scalp_timing_defaults(tmp):
     assert SCALP_WARMUP_SECONDS == {5: 10, 15: 15, 60: 61}
     assert SCALP_ENTRY_ELAPSED == {5: 120, 15: 150, 60: 300}
     assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 50.0, 60: 200.0}
-    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 20.0, 15: 30.0, 60: 60.0}
+    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_ATR_MAX_USD == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_TARGET_CENTS == {5: 60, 15: 60, 60: 70}
     assert ATR_HOURS == 6
@@ -245,6 +250,7 @@ def test_scalp_timing_defaults(tmp):
         assert scalp_atr_max_usd(dur) == SCALP_ATR_MAX_USD[dur]
         assert sim.atr_max_usd == SCALP_ATR_MAX_USD[dur]
         assert sim.velocity_max_usd_per_min == SCALP_VELOCITY_MAX_USD_PER_MIN[dur]
+        assert sim.delta_cap_usd == SCALP_DELTA_CAP_USD[dur]
         assert sim.rsi_good_mix is False
         assert sim.rsi_mix_up_below == 40.0 and sim.rsi_mix_down_above == 60.0
 
@@ -274,18 +280,20 @@ def test_scalp_atr_gate(tmp):
 def test_scalp_velocity_gate(tmp):
     """High adverse early blocks; same adverse only later (no prior trip) may pass."""
     # −$30 vs PTB buying Up; at elapsed=20s → 90$/min > 60; at 60s → 30$/min ≤ 60.
+    # Latch now trips on the cheaper side even before ask ≤30, so the early path
+    # moves BTC only once the cheap ask prints; the late path stays quiet until 60s.
     early = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
     state = run_window(early, [
-        (0, 0.50, 0.51),
-        (20, 0.25, 0.76),
-    ], btc=99_970.0, ptb=100_000.0)
+        (0, 0.50, 0.51, 100_000.0),
+        (20, 0.25, 0.76, 99_970.0),
+    ], ptb=100_000.0)
     assert state.action != "scalp" and "velocity_high" in state.notes
 
     later = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
     state2 = run_window(later, [
-        (0, 0.50, 0.51),
-        (60, 0.25, 0.76),
-    ], btc=99_970.0, ptb=100_000.0)
+        (0, 0.50, 0.51, 100_000.0),
+        (60, 0.25, 0.76, 99_970.0),
+    ], ptb=100_000.0)
     assert state2.action == "scalp" and state2.contracts("Up") == 8
 
 
@@ -294,10 +302,27 @@ def test_scalp_velocity_latch(tmp):
     # Same −$30 adverse: 20s → 90$/min trips latch; 60s → 30$/min would pass without latch.
     sim = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
     state = run_window(sim, [
-        (0, 0.50, 0.51),
-        (20, 0.25, 0.76),  # velocity_high → latch
-        (60, 0.25, 0.76),  # cooled $/min but window no longer quiet
-    ], btc=99_970.0, ptb=100_000.0)
+        (0, 0.50, 0.51, 100_000.0),
+        (20, 0.25, 0.76, 99_970.0),  # velocity_high → latch
+        (60, 0.25, 0.76, 99_970.0),  # cooled $/min but window no longer quiet
+    ], ptb=100_000.0)
+    assert state.action != "scalp" and state.contracts("Up") == 0
+    assert state.velocity_latched
+    assert "velocity_high" in state.notes
+    assert "velocity_latched" in state.notes
+
+
+def test_scalp_velocity_latch_before_cheap_ask(tmp):
+    """High vel while ask still >30¢ must latch; later cheap + cooled vel cannot enter."""
+    # −$20 adverse: at 20s → 60$/min > 20 cap while Up ask is 45¢ (not a candidate).
+    # At 60s → 20$/min on the nose with ask 25¢ — without pre-cheap latch this would fill.
+    sim = scalp_sim(tmp, ladder_first=0, velocity_max=20.0, delta_cap=200.0,
+                    enter_after_seconds=10, cancel_left_pct=180 / 300 * 100)
+    state = run_window(sim, [
+        (0, 0.50, 0.51, 100_000.0),
+        (20, 0.45, 0.56, 99_980.0),  # vel high, ask not cheap → still latch
+        (60, 0.25, 0.76, 99_980.0),  # cooled + cheap — must stay blocked
+    ], ptb=100_000.0)
     assert state.action != "scalp" and state.contracts("Up") == 0
     assert state.velocity_latched
     assert "velocity_high" in state.notes
@@ -1662,6 +1687,7 @@ def main():
             test_scalp_atr_gate,
             test_scalp_velocity_gate,
             test_scalp_velocity_latch,
+            test_scalp_velocity_latch_before_cheap_ask,
             test_scalp_gate_order_atr_before_delta,
             test_scalp_warmup_blocks_then_allows,
             test_scalp_entry_allowed_at_inclusive_max,

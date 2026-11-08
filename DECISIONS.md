@@ -4,21 +4,33 @@
 
 | Duration | Lifespan | Time gate (elapsed) | ~% life | ATR6h max | Velocity $/min | Δ cap |
 |----------|----------|---------------------|---------|-----------|----------------|-------|
-| 5m | 300s | **10s–120s** (was 90s) | 40% | **off** (was $60) | $20 | $10 |
-| 15m | 900s | 15s–150s | 16.6% | **off** (was $125) | $30 | $50 |
-| 60m | 3600s | 61s–300s | 8.3% | **off** (was $350) | $60 | $200 |
+| 5m | 300s | **10s–120s** (was 90s) | 40% | **off** | **off** (was $20) | $10 |
+| 15m | 900s | 15s–150s | 16.6% | **off** | **off** (was $30) | $50 |
+| 60m | 3600s | 61s–300s | 8.3% | **off** | **off** (was $60) | $200 |
 
-Rationale: 5m early book (widened 90→120s 2026-11-08); 15m early imbalance; 60m minute-1–5 mean-reversion. ATR paused 2026-11-07. RSI mix paused 2026-11-08.
+Rationale: 5m early book (widened 90→120s 2026-11-08); 15m early imbalance; 60m minute-1–5 mean-reversion. ATR / RSI / velocity paused 2026-11-07–08 — live defaults are **time + Δ only**.
 
 After time gate + ask ≤30¢:
 
-1. **ATR6h** — paused (default 0); code path kept for `--scalp-atr-max`.
-2. **Adverse velocity** — `adverse_usd / (max(elapsed_s,1)/60)` ≤ per-duration limit; **one breach latches the window** (2026-11-07).
-3. **Signed adverse Δ** — ≤ per-duration cap.
+1. **ATR6h** — paused (default 0); `--scalp-atr-max` to re-enable.
+2. **Adverse velocity** — paused (default 0); latch code kept; `--scalp-velocity-max` to re-enable.
+3. **Signed adverse Δ** — ≤ per-duration cap (**active**).
 
 Skip reasons: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`, `rsi_mix`, `rsi_unknown`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
 
 **RSI good-mix:** paused (default off). Re-enable with `--scalp-rsi-mix`.
+
+## 2026-11-08 — IMPLEMENTED: time + Δ only (velocity off all durations)
+
+Live-matched (lift ask → TP else settle; RSI/ATR off; pre-cheap vel latch when vel on):
+
+| | time+vel+Δ | time+vel (no Δ) | **time+Δ (no vel)** |
+|--|--:|--:|--:|
+| 5m 10–120 | n=267 EV +$0.99 Σ+$265 | n=486 EV +$0.43 | **n=689 EV +$1.17 Σ+$808** |
+| 15m 15–150 | n=60 EV +$0.51 | n=65 EV +$0.36 | n=392 EV +$0.28 Σ+$108 |
+| 60m 61–300 | n=17 EV +$0.90 | n=17 (Δ rarely binds) | n=84 EV +$0.61 Σ+$51 |
+
+Vel alone / no time gate was −EV. Defaults: `SCALP_VELOCITY_MAX_USD_PER_MIN` → **0** all durations. Keep Δ $10/$50/$200 + time gates. Re-enable vel with `--scalp-velocity-max` (prior 20/30/60).
 
 ## 2026-11-08 — IMPLEMENTED: drop RSI mix + 5m entry 10–120s
 
@@ -55,11 +67,20 @@ edge; ≤$250 was worse (WR 46%, −$). Defaults `SCALP_ATR_MAX_USD` → 0 all d
 Re-enable with `--scalp-atr-max` (prior caps 60/125/350). Running-away detection stays
 on velocity (+ latch) and Δ.
 
+## 2026-11-08 — FIX: velocity latch without needing ≤30¢ ask
+
+Bug: latch only armed when a side was already ≤30¢. UI vel (cheaper side) could show
+$40+/min while asks were 40–50¢, then when the ask finally printed ≤30¢ vel had cooled
+to ~$20 and the 5m window still entered. Live Nov-8 examples (11:20 / 11:30 / 11:50).
+Fix: trip latch on adverse vel for the **cheaper ask side** even when ask > entry
+(same side the UI shows). Cheap+cool later still blocked.
+
 ## 2026-11-07 — IMPLEMENTED: velocity window latch
 
-Once adverse velocity exceeds the per-duration cap on a cheap (≤30¢) ask, the window
-stays blocked for the rest of that window (`velocity_latched`) — a stalled knife that
-later cools under $/min must not be treated as quiet.
+Once adverse velocity exceeds the per-duration cap on the cheaper side (ask need not
+be ≤30¢; fixed 2026-11-08), the window stays blocked for the rest of that window
+(`velocity_latched`) — a stalled knife that later cools under $/min must not be
+treated as quiet.
 
 Live-matched 60m (in-gate fills): best cap remains **$60/min**; latch at $60
 blocks the Nov 5 12:00 knife (−$2.12) and does not cut winners in that sample.

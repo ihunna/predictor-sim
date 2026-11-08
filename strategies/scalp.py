@@ -4,10 +4,9 @@ Tightened cross-timeframe defaults (2026-10-31):
 
 * **Time gate:** 5m 10–120s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Vol pipeline:** ATR6h paused (0; re-enable via --scalp-atr-max) →
-  velocity ≤ $20/$30/$60 per min (latch: one breach → skip rest of window) →
-  signed adverse Δ ≤ $10/$50/$200.
-* **RSI good-mix:** off by default (was cutting +EV volume); opt in with --scalp-rsi-mix
+* **Vol pipeline:** ATR6h off; velocity latch off (re-enable via --scalp-atr-max /
+  --scalp-velocity-max); signed adverse Δ ≤ $10/$50/$200.
+* **RSI good-mix:** off by default; opt in with --scalp-rsi-mix
   (Up only if RSI<40, Down only if RSI>60; unknown skips).
 * **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
@@ -23,8 +22,9 @@ SCALP_WARMUP_SECONDS = {5: 10, 15: 15, 60: 61}
 SCALP_ENTRY_ELAPSED = {5: 120, 15: 150, 60: 300}  # 5m 45→90→120 (2026-11-08)
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 50.0, 60: 200.0}
-# Adverse velocity caps ($/min of elapsed) by duration.
-SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 20.0, 15: 30.0, 60: 60.0}
+# Adverse velocity caps ($/min of elapsed) by duration; 0 = off.
+# Paused 2026-11-08 (time+Δ only; prior 20/30/60). Re-enable via --scalp-velocity-max.
+SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 0.0, 15: 0.0, 60: 0.0}
 # 6h hourly ATR max (USD) by duration; 0 = off. Paused 2026-11-07 (was 60/125/350).
 SCALP_ATR_MAX_USD = {5: 0.0, 15: 0.0, 60: 0.0}
 # Resting take-profit (¢); 60m raised to 70 after live-matched replay (2026-11-03).
@@ -79,7 +79,7 @@ class ScalpSim(BaseSim):
     start_mode = "against"
 
     def __init__(self, *args, entry_cents=30, target_cents=None, ladder_first_cents=0,
-                 split_entry_cents=0, split_target_cents=40, delta_cap_usd=0.0,
+                 split_entry_cents=0, split_target_cents=40, delta_cap_usd=None,
                  atr_max_usd=None, velocity_max_usd_per_min=None,
                  exit_left_seconds=0, enter_after_seconds=None,
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
@@ -112,19 +112,23 @@ class ScalpSim(BaseSim):
             self.split_entry_cents < self.split_target_cents <= max(self.target_cents, self.split_entry_cents + 1)
         ):
             self.split_target_cents = self.entry_cents + 10
-        # Signed adverse-Δ skip (USD) at entry; 0 = off. Defaults via run.py / SCALP_DELTA_CAP_USD.
-        self.delta_cap_usd = max(0.0, float(delta_cap_usd or 0.0))
+        # Signed adverse-Δ skip (USD) at entry; 0 = off. None → per-duration default
+        # (5m $10 / 15m $50 / 60m $200) — same pattern as velocity/ATR.
+        if delta_cap_usd is None:
+            delta_cap_usd = scalp_delta_cap_usd(self.duration)
+        self.delta_cap_usd = max(0.0, float(delta_cap_usd))
         # Layer 1: 6h hourly ATR max (USD); 0 = off. None → per-duration default.
         if atr_max_usd is None:
             atr_max_usd = scalp_atr_max_usd(self.duration)
-        self.atr_max_usd = max(0.0, float(atr_max_usd or 0.0))
+        self.atr_max_usd = max(0.0, float(atr_max_usd))
         self.atr_6h: float | None = None  # set by run.py / tests
         # Back-compat alias for older UI/tests that still read atr_24h.
         self.atr_24h = None
-        # Layer 2: adverse USD per elapsed minute; 0 = off. None → per-duration default.
+        # Layer 2: adverse USD per elapsed minute + window latch; 0 = off.
+        # None → per-duration default (currently 0 / paused; prior 20/30/60).
         if velocity_max_usd_per_min is None:
             velocity_max_usd_per_min = scalp_velocity_max_usd_per_min(self.duration)
-        self.velocity_max_usd_per_min = max(0.0, float(velocity_max_usd_per_min or 0.0))
+        self.velocity_max_usd_per_min = max(0.0, float(velocity_max_usd_per_min))
         self.exit_left_seconds = max(0, int(exit_left_seconds))
         # Warm-up: no entries while elapsed < this (per-duration SCALP_WARMUP_SECONDS).
         if enter_after_seconds is None:
@@ -287,12 +291,19 @@ class ScalpSim(BaseSim):
         if 0 < down_ask <= entry + 1e-9:
             candidates.append(("Down", down_ask))
 
-        # Latch bookkeeping even outside the entry window: cheap ask + vel breach
-        # means this window is not quiet — never enter later when vel "cools".
+        # Latch on adverse velocity for the cheaper side (same side the UI shows),
+        # even when ask is still > entry. Otherwise a 40$/min knife while the ask
+        # is 40–50¢ never arms the latch, then a cooled ~20$/min + ≤30¢ still enters.
+        # Bookkeeping runs outside the entry window too so a cooled late print cannot
+        # treat the window as quiet.
         tripped_now = False
-        if candidates and self.velocity_max_usd_per_min > 0:
-            side_chk, _ = min(candidates, key=lambda x: x[1])
-            if self._velocity_trip(state, side_chk, remaining):
+        if self.velocity_max_usd_per_min > 0:
+            side_chk = None
+            if up_ask > 0 and down_ask > 0:
+                side_chk = "Up" if up_ask <= down_ask else "Down"
+            elif candidates:
+                side_chk = min(candidates, key=lambda x: x[1])[0]
+            if side_chk and self._velocity_trip(state, side_chk, remaining):
                 state.velocity_latched = True
                 tripped_now = True
 
