@@ -2,13 +2,13 @@
 
 Tightened cross-timeframe defaults (2026-10-31):
 
-* **Time gate:** 5m 10–90s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
+* **Time gate:** 5m 10–120s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
 * **Vol pipeline:** ATR6h paused (0; re-enable via --scalp-atr-max) →
   velocity ≤ $20/$30/$60 per min (latch: one breach → skip rest of window) →
   signed adverse Δ ≤ $10/$50/$200.
-* **RSI good-mix:** buy Up only if RSI<40, buy Down only if RSI>60
-  (unknown RSI skips; --no-scalp-rsi-mix to disable).
+* **RSI good-mix:** off by default (was cutting +EV volume); opt in with --scalp-rsi-mix
+  (Up only if RSI<40, Down only if RSI>60; unknown skips).
 * **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
@@ -20,7 +20,7 @@ from sim import BaseSim, Order
 # Warm-up blackout end / first allowed entry elapsed (seconds into the window).
 SCALP_WARMUP_SECONDS = {5: 10, 15: 15, 60: 61}
 # Inclusive end of the active entry window (seconds into the window).
-SCALP_ENTRY_ELAPSED = {5: 90, 15: 150, 60: 300}  # 5m widened 45→90 (2026-11-08)
+SCALP_ENTRY_ELAPSED = {5: 120, 15: 150, 60: 300}  # 5m 45→90→120 (2026-11-08)
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 50.0, 60: 200.0}
 # Adverse velocity caps ($/min of elapsed) by duration.
@@ -32,7 +32,7 @@ SCALP_TARGET_CENTS = {5: 60, 15: 60, 60: 70}
 # Side-aware RSI good-mix (recent window lean): Up only if RSI below, Down only if above.
 SCALP_RSI_MIX_UP_BELOW = 40.0
 SCALP_RSI_MIX_DOWN_ABOVE = 60.0
-SCALP_RSI_GOOD_MIX_DEFAULT = True
+SCALP_RSI_GOOD_MIX_DEFAULT = False  # paused 2026-11-08 (was cutting +EV volume)
 
 
 def scalp_warmup_seconds(duration):
@@ -86,7 +86,7 @@ class ScalpSim(BaseSim):
                  rsi_zone=None, rsi_good_mix=None,
                  rsi_mix_up_below=None, rsi_mix_down_above=None, **kwargs):
         duration = args[1] if len(args) > 1 else kwargs.get("duration", 5)
-        # Unfilled cancel after the gated entry window (5m→45s / 15m→150s / 60m→300s).
+        # Unfilled cancel after the gated entry window (5m→120s / 15m→150s / 60m→300s).
         kwargs.setdefault("cancel_left_pct", scalp_cancel_left_pct(duration))
         kwargs.setdefault("stop_loss_seconds", 0)
         kwargs.setdefault("max_prev_move_pct", 0.0)

@@ -4,11 +4,11 @@
 
 | Duration | Lifespan | Time gate (elapsed) | ~% life | ATR6h max | Velocity $/min | Δ cap |
 |----------|----------|---------------------|---------|-----------|----------------|-------|
-| 5m | 300s | **10s–90s** (was 45s) | 30% | **off** (was $60) | $20 | $10 |
+| 5m | 300s | **10s–120s** (was 90s) | 40% | **off** (was $60) | $20 | $10 |
 | 15m | 900s | 15s–150s | 16.6% | **off** (was $125) | $30 | $50 |
 | 60m | 3600s | 61s–300s | 8.3% | **off** (was $350) | $60 | $200 |
 
-Rationale: 5m early book (widened 45→90s 2026-11-08); 15m early imbalance; 60m minute-1–5 mean-reversion. ATR paused 2026-11-07.
+Rationale: 5m early book (widened 90→120s 2026-11-08); 15m early imbalance; 60m minute-1–5 mean-reversion. ATR paused 2026-11-07. RSI mix paused 2026-11-08.
 
 After time gate + ask ≤30¢:
 
@@ -18,21 +18,34 @@ After time gate + ask ≤30¢:
 
 Skip reasons: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`, `rsi_mix`, `rsi_unknown`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
 
-**RSI good-mix (2026-11-07, default on):** Up only if RSI&lt;40, Down only if RSI&gt;60.
+**RSI good-mix:** paused (default off). Re-enable with `--scalp-rsi-mix`.
 
-## 2026-11-08 — IMPLEMENTED: 5m entry gate 10–90s
+## 2026-11-08 — IMPLEMENTED: drop RSI mix + 5m entry 10–120s
+
+Live-matched (lift ask → TP else settle; vel latch + Δ on):
+
+| | CURRENT (RSI on) | drop RSI | notes |
+|--|--:|--:|--|
+| 5m 10–90 | n=94 EV +$1.57 | n=366 EV +$1.44 | RSI was main volume choke |
+| 5m time→120 + RSI | n=138 EV +$1.62 | — | time widen keeps EV |
+| 15m | n=87 EV +$0.82 | n=255 EV +$0.50 | still +EV; do not chase >150s |
+| 60m | n=17 EV +$1.68 | n=71 EV +$1.21 | late >300s no-RSI −EV — keep gate |
+
+Defaults: `SCALP_RSI_GOOD_MIX_DEFAULT` → **False**; `SCALP_ENTRY_ELAPSED[5]` 90→**120** (cancel-left → 180s). Leave 15m/60m time, Δ, vel latch unchanged. `--scalp-rsi-mix` to re-enable.
+
+## 2026-11-08 — IMPLEMENTED: 5m entry gate 10–90s (superseded → 120)
 
 Live-matched 5m (30¢, vel+latch, Δ, RSI mix): 10–45s n=44 WR84% +$9; **10–90s**
 n=118 WR81% +$21.6 (TP60) / +$24.4 (TP70). EXTRA 46–90s strongly positive. Full-window
-still dilutes. Default `SCALP_ENTRY_ELAPSED[5]` 45→**90** (cancel-left → 210s).
+still dilutes. Default `SCALP_ENTRY_ELAPSED[5]` 45→**90** (cancel-left → 210s). Superseded same day → 120 + RSI off.
 
-## 2026-11-07 — IMPLEMENTED: RSI good-mix (with current filters)
+## 2026-11-07 — IMPLEMENTED: RSI good-mix (superseded → default off)
 
 Buy **Up** only if RSI &lt; 40; buy **Down** only if RSI &gt; 60; unknown RSI skips.
 On top of time + vel latch + Δ + TP (ATR still paused). Live-matched 60m: n=13 WR 85%
 EV +$0.30 +$3.9 vs filters-only n=50 WR 58% +$5.6 (fewer trades, higher quality).
 Would have blocked 2/4 of the latest losses; not the Nov 5 knife or Sat 00:00.
-Default on; `--no-scalp-rsi-mix` to disable. Skip notes: `rsi_mix`, `rsi_unknown`.
+Was default on; paused 2026-11-08 after full-sample replay showed RSI cut +EV volume on 5m/15m/60m. Skip notes: `rsi_mix`, `rsi_unknown`.
 
 ## 2026-11-07 — IMPLEMENTED: pause ATR gate (default 0)
 

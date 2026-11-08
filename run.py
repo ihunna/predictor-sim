@@ -470,11 +470,11 @@ def parse_args():
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
                              "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); tightened time gate "
-                             "(5m 10–90s / 15m 15–150s / 60m 61–300s); "
-                             "ATR6h≤$60/$125/$350 → velocity ≤$20/$30/$60/min → "
-                             "signed adverse-Δ $10/$50/$200 "
+                             "(5m 10–120s / 15m 15–150s / 60m 61–300s); "
+                             "ATR6h off → velocity ≤$20/$30/$60/min (latch) → "
+                             "signed adverse-Δ $10/$50/$200; RSI mix off "
                              "(see --scalp-atr-max / --scalp-velocity-max / "
-                             "--scalp-delta-cap / --scalp-target). "
+                             "--scalp-delta-cap / --scalp-rsi-mix / --scalp-target). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -585,9 +585,9 @@ def parse_args():
     parser.add_argument("--rsi-zone", default="", metavar="LO-HI",
                         help="Scalp only: enter only when RSI is in this inclusive band, e.g. 70-100. "
                              "Empty (default) = off. Unknown RSI skips when set.")
-    parser.add_argument("--scalp-rsi-mix", action=argparse.BooleanOptionalAction, default=True,
+    parser.add_argument("--scalp-rsi-mix", action=argparse.BooleanOptionalAction, default=False,
                         help="Scalp: RSI good-mix — buy Up only if RSI<40, buy Down only if RSI>60 "
-                             "(default on). Unknown RSI skips. --no-scalp-rsi-mix disables.")
+                             "(default off). Unknown RSI skips when enabled. --scalp-rsi-mix to enable.")
     parser.add_argument("--trade-hours", "--scalp-hours", dest="trade_hours", default="",
                         metavar="START-END",
                         help="All strategies: enter only windows starting in this local-time "
@@ -612,7 +612,7 @@ def parse_args():
     parser.add_argument("--cancel-left-pct", type=float, default=None,
                         help="Cancel unfilled when this much of the window is left, in percent. "
                              "Dual default 67 ≈ first third. Scalp default matches entry window "
-                             "end (5m/15m/60m → first 90s/2m/5m). Scalp also gates new entries "
+                             "end (5m/15m/60m → first 120s/2:30/5m). Scalp also gates new entries "
                              "by elapsed warm-up…entry-max. 0 = never cancel.")
     parser.add_argument("--savior-left-pct", type=float, default=0.0,
                         help="On one-sided holds, arm savior when this much of the window is left "

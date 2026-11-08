@@ -220,7 +220,7 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
 def test_scalp_timing_defaults(tmp):
     """All-in 30→60; tightened time gate + ATR/velocity/Δ scale with duration."""
     assert SCALP_WARMUP_SECONDS == {5: 10, 15: 15, 60: 61}
-    assert SCALP_ENTRY_ELAPSED == {5: 90, 15: 150, 60: 300}
+    assert SCALP_ENTRY_ELAPSED == {5: 120, 15: 150, 60: 300}
     assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 50.0, 60: 200.0}
     assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 20.0, 15: 30.0, 60: 60.0}
     assert SCALP_ATR_MAX_USD == {5: 0.0, 15: 0.0, 60: 0.0}
@@ -229,10 +229,10 @@ def test_scalp_timing_defaults(tmp):
     assert scalp_warmup_seconds(5) == 10
     assert scalp_warmup_seconds(15) == 15
     assert scalp_warmup_seconds(60) == 61
-    assert abs(scalp_cancel_left_pct(5) - 210 / 300 * 100) < 1e-9
+    assert abs(scalp_cancel_left_pct(5) - 180 / 300 * 100) < 1e-9
     assert abs(scalp_cancel_left_pct(15) - 750 / 900 * 100) < 1e-9
     assert abs(scalp_cancel_left_pct(60) - 3300 / 3600 * 100) < 1e-9
-    for dur, cancel_left in ((5, 210), (15, 750), (60, 3300)):
+    for dur, cancel_left in ((5, 180), (15, 750), (60, 3300)):
         sim = ScalpSim("btc", dur, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default")
         assert sim.entry_cents == 30 and sim.target_cents == SCALP_TARGET_CENTS[dur]
         assert sim.target_cents == scalp_target_cents(dur)
@@ -245,7 +245,7 @@ def test_scalp_timing_defaults(tmp):
         assert scalp_atr_max_usd(dur) == SCALP_ATR_MAX_USD[dur]
         assert sim.atr_max_usd == SCALP_ATR_MAX_USD[dur]
         assert sim.velocity_max_usd_per_min == SCALP_VELOCITY_MAX_USD_PER_MIN[dur]
-        assert sim.rsi_good_mix is True
+        assert sim.rsi_good_mix is False
         assert sim.rsi_mix_up_below == 40.0 and sim.rsi_mix_down_above == 60.0
 
 
@@ -318,9 +318,9 @@ def test_scalp_gate_order_atr_before_delta(tmp):
 
 
 def test_scalp_warmup_blocks_then_allows(tmp):
-    """5m: cheap ask before 10s ignored; inside 10–90s it fills."""
-    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=10, cancel_left_pct=210 / 300 * 100)
-    assert sim.entry_elapsed_max == 90
+    """5m: cheap ask before 10s ignored; inside 10–120s it fills."""
+    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=10, cancel_left_pct=180 / 300 * 100)
+    assert sim.entry_elapsed_max == 120
     state = run_window(sim, [
         (5, 0.25, 0.76),   # during warm-up — no entry
         (20, 0.25, 0.76),  # gated window — enter
@@ -332,23 +332,23 @@ def test_scalp_warmup_blocks_then_allows(tmp):
 
 
 def test_scalp_entry_allowed_at_inclusive_max(tmp):
-    """5m: entry at exactly elapsed=90s (inclusive end of window) is allowed."""
-    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=10, cancel_left_pct=210 / 300 * 100)
-    assert sim.entry_elapsed_max == 90
+    """5m: entry at exactly elapsed=120s (inclusive end of window) is allowed."""
+    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=10, cancel_left_pct=180 / 300 * 100)
+    assert sim.entry_elapsed_max == 120
     state = run_window(sim, [
         (5, 0.50, 0.51),
-        (90, 0.25, 0.76),  # exactly entry_elapsed_max — allowed
-        (120, 0.40, 0.80),
+        (120, 0.25, 0.76),  # exactly entry_elapsed_max — allowed
+        (150, 0.40, 0.80),
     ])
     assert state.action == "scalp" and state.up_fill_price == 0.25
 
 
 def test_scalp_hard_cutoff_blocks_late_entry(tmp):
-    """5m: cheap ask after entry_elapsed_max (elapsed>90) does not enter."""
-    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=10, cancel_left_pct=210 / 300 * 100)
+    """5m: cheap ask after entry_elapsed_max (elapsed>120) does not enter."""
+    sim = scalp_sim(tmp, ladder_first=0, enter_after_seconds=10, cancel_left_pct=180 / 300 * 100)
     state = run_window(sim, [
         (5, 0.50, 0.51),
-        (100, 0.25, 0.76),  # elapsed 100s > 90s window — blocked
+        (130, 0.25, 0.76),  # elapsed 130s > 120s window — blocked
         (150, 0.40, 0.80),
     ])
     assert state.action != "scalp" or state.up_fill_price is None
