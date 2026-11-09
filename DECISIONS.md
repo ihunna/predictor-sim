@@ -1,24 +1,40 @@
 # Decision log — scalp
 
-## 2026-10-31 — IMPLEMENTED: fully tightened cross-timeframe gates
+## 2026-11-09 — IMPLEMENTED: Δ-only high-WR (current defaults)
 
-| Duration | Lifespan | Time gate (elapsed) | ~% life | ATR6h max | Velocity $/min | Δ cap |
-|----------|----------|---------------------|---------|-----------|----------------|-------|
-| 5m | 300s | **10s–120s** (was 90s) | 40% | **off** | **off** (was $20) | $10 |
-| 15m | 900s | 15s–150s | 16.6% | **off** | **off** (was $30) | $50 |
-| 60m | 3600s | 61s–300s | 8.3% | **off** | **off** (was $60) | $200 |
+| Duration | Lifespan | Time gate | ATR6h | Velocity | Δ cap (only filter) |
+|----------|----------|-----------|-------|----------|---------------------|
+| 5m | 300s | **off** (full window) | **off** | **off** | **$10** |
+| 15m | 900s | **off** | **off** | **off** | **$20** |
+| 60m | 3600s | **off** | **off** | **off** | **$50** |
 
-Rationale: 5m early book (widened 90→120s 2026-11-08); 15m early imbalance; 60m minute-1–5 mean-reversion. ATR / RSI / velocity paused 2026-11-07–08 — live defaults are **time + Δ only**.
+Live stack: **Δ only** — lift ≤30¢ anytime; skip if adverse BTC vs PTB exceeds cap. Time/ATR/vel/RSI off.
 
-After time gate + ask ≤30¢:
+Skip reasons still coded: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`, `rsi_mix`, `rsi_unknown`. Entry ≤30¢ → TP (**5m/15m 60¢, 60m 70¢**); miss → settle.
 
-1. **ATR6h** — paused (default 0); `--scalp-atr-max` to re-enable.
-2. **Adverse velocity** — paused (default 0); latch code kept; `--scalp-velocity-max` to re-enable.
-3. **Signed adverse Δ** — ≤ per-duration cap (**active**).
+Logged scalp `pnl` only (no counterfactual TP):
 
-Skip reasons: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`, `rsi_mix`, `rsi_unknown`. Entry ≤30¢ taker → TP maker (**5m/15m 60¢, 60m 70¢** as of 2026-11-03); miss → settle.
+| | ALL | Δ≤$10 | Δ≤$20 | Δ≤$50 |
+|--|--:|--:|--:|--:|
+| 5m | n=1666 WR43% Σ−$484 | **n=268 WR74% Σ+$211** | n=618 WR61% Σ+$235 | n=1385 WR46% Σ−$199 |
+| 15m | n=633 WR47% Σ−$111 | n=19 WR84% Σ+$19 | **n=41 WR71% Σ+$22** | n=348 WR50% Σ−$12 |
+| 60m | n=183 WR45% Σ−$51 | — | — | **n=6 WR67% Σ+$4** |
 
-**RSI good-mix:** paused (default off). Re-enable with `--scalp-rsi-mix`.
+Defaults: Δ **$10 / $20 / $50**; warmup 0; entry = full window; ATR 0. 60m n is tiny at WR≥65% — only Δ≤$50 clears that bar.
+
+## 2026-11-08 — IMPLEMENTED (superseded by Δ-only): ATR6h ≤ $500 + RSI readout
+
+Live-matched on time+Δ (vel/RSI off unless noted); ~21% of windows have ATR≥$500:
+
+| | time+Δ | +ATR≤500 | +RSI mix | +ATR≤500+RSI |
+|--|--:|--:|--:|--:|
+| 5m | n=689 EV+$1.17 Σ+$808 | n=589 EV+$1.07 Σ+$628 | n=168 EV+$1.25 Σ+$209 | n=146 EV+$1.11 Σ+$161 |
+| 15m | n=392 EV+$0.28 Σ+$108 | n=356 EV+$0.21 Σ+$75 | n=124 EV+$0.43 Σ+$54 | n=115 EV+$0.36 Σ+$42 |
+| 60m | n=84 EV+$0.61 Σ+$51 | n=63 EV+$0.81 Σ+$51 | n=22 EV+$0.94 Σ+$21 | n=16 EV+$1.49 Σ+$24 |
+
+Note: on 5m/15m, fills *inside* ATR≥500 were historically +EV (5m n=100 EV+$1.80); ATR≤500 is a regime risk skip, not an EV max. On 60m ATR≥500 fills were flat — gate helps. RSI mix raises EV but cuts n ~3–4×; left **off** unless enabled.
+
+Defaults then: `SCALP_ATR_MAX_USD` → **500** (later off under Δ-only).
 
 ## 2026-11-08 — IMPLEMENTED: time + Δ only (velocity off all durations)
 

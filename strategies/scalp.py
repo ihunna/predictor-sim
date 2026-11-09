@@ -1,13 +1,10 @@
 """Cheap-side scalper: buy a dumped ask, take-profit on a resting limit, else settle.
 
-Tightened cross-timeframe defaults (2026-10-31):
+Defaults (2026-11-09) — **Δ-only** for high WR (logged fills):
 
-* **Time gate:** 5m 10–120s; 15m 15–150s; 60m 61–300s (hard stop early in the window).
-* **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Vol pipeline:** ATR6h off; velocity latch off (re-enable via --scalp-atr-max /
-  --scalp-velocity-max); signed adverse Δ ≤ $10/$50/$200.
-* **RSI good-mix:** off by default; opt in with --scalp-rsi-mix
-  (Up only if RSI<40, Down only if RSI>60; unknown skips).
+* **Signal:** lift ask ≤30¢ (taker) on the cheaper side, any time in the window.
+* **Only filter:** signed adverse Δ ≤ $10 / $20 / $50 (5m / 15m / 60m).
+* **Off:** time gate, ATR, velocity latch, RSI mix (re-enable via CLI).
 * **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
@@ -17,15 +14,15 @@ from logs import format_time
 from sim import BaseSim, Order
 
 # Warm-up blackout end / first allowed entry elapsed (seconds into the window).
-SCALP_WARMUP_SECONDS = {5: 10, 15: 15, 60: 61}
-# Inclusive end of the active entry window (seconds into the window).
-SCALP_ENTRY_ELAPSED = {5: 120, 15: 150, 60: 300}  # 5m 45→90→120 (2026-11-08)
+# 0 / full-window = no time gate (2026-11-09 Δ-only).
+SCALP_WARMUP_SECONDS = {5: 0, 15: 0, 60: 0}
+SCALP_ENTRY_ELAPSED = {5: 300, 15: 900, 60: 3600}
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
-SCALP_DELTA_CAP_USD = {5: 10.0, 15: 50.0, 60: 200.0}
+# High-WR logged caps (2026-11-09): 5m≤$10 WR74%; 15m≤$20 WR71%; 60m≤$50 WR67%.
+SCALP_DELTA_CAP_USD = {5: 10.0, 15: 20.0, 60: 50.0}
 # Adverse velocity caps ($/min of elapsed) by duration; 0 = off.
-# Paused 2026-11-08 (time+Δ only; prior 20/30/60). Re-enable via --scalp-velocity-max.
 SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 0.0, 15: 0.0, 60: 0.0}
-# 6h hourly ATR max (USD) by duration; 0 = off. Paused 2026-11-07 (was 60/125/350).
+# 6h hourly ATR max (USD) by duration; 0 = off.
 SCALP_ATR_MAX_USD = {5: 0.0, 15: 0.0, 60: 0.0}
 # Resting take-profit (¢); 60m raised to 70 after live-matched replay (2026-11-03).
 SCALP_TARGET_CENTS = {5: 60, 15: 60, 60: 70}
@@ -86,7 +83,7 @@ class ScalpSim(BaseSim):
                  rsi_zone=None, rsi_good_mix=None,
                  rsi_mix_up_below=None, rsi_mix_down_above=None, **kwargs):
         duration = args[1] if len(args) > 1 else kwargs.get("duration", 5)
-        # Unfilled cancel after the gated entry window (5m→120s / 15m→150s / 60m→300s).
+        # Unfilled cancel; default 0 (full window / Δ-only). Time gate via --cancel-left-pct.
         kwargs.setdefault("cancel_left_pct", scalp_cancel_left_pct(duration))
         kwargs.setdefault("stop_loss_seconds", 0)
         kwargs.setdefault("max_prev_move_pct", 0.0)
@@ -113,7 +110,7 @@ class ScalpSim(BaseSim):
         ):
             self.split_target_cents = self.entry_cents + 10
         # Signed adverse-Δ skip (USD) at entry; 0 = off. None → per-duration default
-        # (5m $10 / 15m $50 / 60m $200) — same pattern as velocity/ATR.
+        # (5m $10 / 15m $20 / 60m $50).
         if delta_cap_usd is None:
             delta_cap_usd = scalp_delta_cap_usd(self.duration)
         self.delta_cap_usd = max(0.0, float(delta_cap_usd))
@@ -130,14 +127,15 @@ class ScalpSim(BaseSim):
             velocity_max_usd_per_min = scalp_velocity_max_usd_per_min(self.duration)
         self.velocity_max_usd_per_min = max(0.0, float(velocity_max_usd_per_min))
         self.exit_left_seconds = max(0, int(exit_left_seconds))
-        # Warm-up: no entries while elapsed < this (per-duration SCALP_WARMUP_SECONDS).
+        # Warm-up: no entries while elapsed < this (default 0 under Δ-only).
         if enter_after_seconds is None:
             enter_after_seconds = scalp_warmup_seconds(self.duration)
         self.enter_after_seconds = max(0, int(enter_after_seconds))
-        # Inclusive entry deadline; if cancel/gate is off, allow the full window.
+        # Inclusive entry deadline from cancel_left; 0 cancel → full window.
+        window_s = self.duration * 60
         self.entry_elapsed_max = (
-            self.duration * 60 if self.cancel_left_pct <= 0
-            else scalp_entry_elapsed_max(self.duration)
+            window_s if self.cancel_left_pct <= 0
+            else int(round(window_s * (1.0 - self.cancel_left_pct / 100.0)))
         )
         # 0 = no hard stop
         self.stop_cents = max(0, int(stop_cents if stop_cents is not None else 0))

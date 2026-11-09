@@ -223,21 +223,21 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
 
 
 def test_scalp_timing_defaults(tmp):
-    """All-in 30→60; tightened time gate + ATR/velocity/Δ scale with duration."""
-    assert SCALP_WARMUP_SECONDS == {5: 10, 15: 15, 60: 61}
-    assert SCALP_ENTRY_ELAPSED == {5: 120, 15: 150, 60: 300}
-    assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 50.0, 60: 200.0}
+    """All-in 30→TP; Δ-only defaults (no time/ATR/vel); caps $10/$20/$50."""
+    assert SCALP_WARMUP_SECONDS == {5: 0, 15: 0, 60: 0}
+    assert SCALP_ENTRY_ELAPSED == {5: 300, 15: 900, 60: 3600}
+    assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 20.0, 60: 50.0}
     assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_ATR_MAX_USD == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_TARGET_CENTS == {5: 60, 15: 60, 60: 70}
     assert ATR_HOURS == 6
-    assert scalp_warmup_seconds(5) == 10
-    assert scalp_warmup_seconds(15) == 15
-    assert scalp_warmup_seconds(60) == 61
-    assert abs(scalp_cancel_left_pct(5) - 180 / 300 * 100) < 1e-9
-    assert abs(scalp_cancel_left_pct(15) - 750 / 900 * 100) < 1e-9
-    assert abs(scalp_cancel_left_pct(60) - 3300 / 3600 * 100) < 1e-9
-    for dur, cancel_left in ((5, 180), (15, 750), (60, 3300)):
+    assert scalp_warmup_seconds(5) == 0
+    assert scalp_warmup_seconds(15) == 0
+    assert scalp_warmup_seconds(60) == 0
+    assert abs(scalp_cancel_left_pct(5) - 0.0) < 1e-9
+    assert abs(scalp_cancel_left_pct(15) - 0.0) < 1e-9
+    assert abs(scalp_cancel_left_pct(60) - 0.0) < 1e-9
+    for dur, cancel_left in ((5, 0), (15, 0), (60, 0)):
         sim = ScalpSim("btc", dur, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default")
         assert sim.entry_cents == 30 and sim.target_cents == SCALP_TARGET_CENTS[dur]
         assert sim.target_cents == scalp_target_cents(dur)

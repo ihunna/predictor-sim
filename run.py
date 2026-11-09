@@ -469,11 +469,10 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); tightened time gate "
-                             "(5m 10–120s / 15m 15–150s / 60m 61–300s); "
-                             "ATR/velocity off; signed adverse-Δ $10/$50/$200; RSI mix off "
-                             "(see --scalp-atr-max / --scalp-velocity-max / "
-                             "--scalp-delta-cap / --scalp-rsi-mix / --scalp-target). "
+                             "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); Δ-only filter "
+                             "(adverse ≤$10/$20/$50); no time/ATR/vel/RSI gates "
+                             "(see --scalp-delta-cap / --scalp-atr-max / "
+                             "--scalp-velocity-max / --scalp-rsi-mix / --scalp-target). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -527,8 +526,8 @@ def parse_args():
 
     parser.add_argument("--enter-after", type=int, default=None, metavar="SECONDS_IN",
                         help="Earliest seconds into the window to place. "
-                             "Dual default 0 (from open). Scalp default = warm-up "
-                             "(5s / 15s / 60s by duration).")
+                             "Dual default 0 (from open). Scalp default 0 "
+                             "(full window; Δ-only).")
     parser.add_argument("--quiet-max-pct", type=float, default=None, metavar="PCT",
                         help="Dual: max |BTC Δ from PTB| (default 0 = off; dual ignores Δ unless set).")
 
@@ -563,13 +562,12 @@ def parse_args():
                         help="Scalp: take-profit for the second (deep) half (default 40; ignored if split off).")
     parser.add_argument("--scalp-delta-cap", type=float, default=None, metavar="USD",
                         help="Scalp: skip when signed adverse BTC move from PTB (USD) against "
-                             "the bought side exceeds this at entry. Default: 5m $10 / 15m $50 / "
-                             "60m $200; 0 = off.")
+                             "the bought side exceeds this at entry. Default: 5m $10 / 15m $20 / "
+                             "60m $50 (high-WR Δ-only); 0 = off.")
     parser.add_argument("--scalp-atr-max", type=float, default=None, metavar="USD",
                         help="Scalp: skip entry while 6h hourly ATR (Binance 1h mean high−low) "
-                             "exceeds this, or ATR not ready. Default: 0 (paused); prior live "
-                             "caps were 5m $60 / 15m $125 / 60m $350. Fail skips only this "
-                             "window (re-check next).")
+                             "exceeds this, or ATR not ready. Default: 0 (off); e.g. 500 to "
+                             "skip high-vol regimes. Fail skips only this window.")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this "
                              "(window latch). Default: 0 (paused); prior caps were "
@@ -610,9 +608,8 @@ def parse_args():
                              "the contracts and log it (default 3; 0 = any price).")
     parser.add_argument("--cancel-left-pct", type=float, default=None,
                         help="Cancel unfilled when this much of the window is left, in percent. "
-                             "Dual default 67 ≈ first third. Scalp default matches entry window "
-                             "end (5m/15m/60m → first 120s/2:30/5m). Scalp also gates new entries "
-                             "by elapsed warm-up…entry-max. 0 = never cancel.")
+                             "Dual default 67 ≈ first third. Scalp default 0 (full window; "
+                             "Δ-only). 0 = never cancel.")
     parser.add_argument("--savior-left-pct", type=float, default=0.0,
                         help="On one-sided holds, arm savior when this much of the window is left "
                              "(default 0 = off). E.g. 50 ≈ half window left. Locks a cut from winner strength; "
