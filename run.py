@@ -469,10 +469,10 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); Δ-only filter "
-                             "(adverse ≤$10/$20/$50); no time/ATR/vel/RSI gates "
-                             "(see --scalp-delta-cap / --scalp-atr-max / "
-                             "--scalp-velocity-max / --scalp-rsi-mix / --scalp-target). "
+                             "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); Δ ≤$10/$20/$50 + "
+                             "entry ≤150s/450s/900s; ATR/vel/RSI off "
+                             "(see --scalp-delta-cap / --cancel-left-pct / "
+                             "--scalp-atr-max / --scalp-rsi-mix / --scalp-target). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -527,7 +527,7 @@ def parse_args():
     parser.add_argument("--enter-after", type=int, default=None, metavar="SECONDS_IN",
                         help="Earliest seconds into the window to place. "
                              "Dual default 0 (from open). Scalp default 0 "
-                             "(full window; Δ-only).")
+                             "(no warm-up; hard cutoff via --cancel-left-pct).")
     parser.add_argument("--quiet-max-pct", type=float, default=None, metavar="PCT",
                         help="Dual: max |BTC Δ from PTB| (default 0 = off; dual ignores Δ unless set).")
 
@@ -608,8 +608,9 @@ def parse_args():
                              "the contracts and log it (default 3; 0 = any price).")
     parser.add_argument("--cancel-left-pct", type=float, default=None,
                         help="Cancel unfilled when this much of the window is left, in percent. "
-                             "Dual default 67 ≈ first third. Scalp default 0 (full window; "
-                             "Δ-only). 0 = never cancel.")
+                             "Dual default 67 ≈ first third. Scalp default from entry gate "
+                             "(5m/15m/60m → 50%/50%/75% left ≈ entry ≤150s/450s/900s). "
+                             "0 = never cancel.")
     parser.add_argument("--savior-left-pct", type=float, default=0.0,
                         help="On one-sided holds, arm savior when this much of the window is left "
                              "(default 0 = off). E.g. 50 ≈ half window left. Locks a cut from winner strength; "

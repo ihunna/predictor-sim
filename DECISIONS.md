@@ -1,26 +1,24 @@
 # Decision log — scalp
 
-## 2026-11-09 — IMPLEMENTED: Δ-only high-WR (current defaults)
+## 2026-11-09 — IMPLEMENTED: Δ + WR/PnL-balance time gates (current defaults)
 
-| Duration | Lifespan | Time gate | ATR6h | Velocity | Δ cap (only filter) |
-|----------|----------|-----------|-------|----------|---------------------|
-| 5m | 300s | **off** (full window) | **off** | **off** | **$10** |
-| 15m | 900s | **off** | **off** | **off** | **$20** |
-| 60m | 3600s | **off** | **off** | **off** | **$50** |
+| Duration | Lifespan | Time gate (elapsed) | ATR6h | Velocity | Δ cap |
+|----------|----------|---------------------|-------|----------|-------|
+| 5m | 300s | **≤150s** | **off** | **off** | **$10** |
+| 15m | 900s | **≤450s** | **off** | **off** | **$20** |
+| 60m | 3600s | **≤900s** | **off** | **off** | **$50** |
 
-Live stack: **Δ only** — lift ≤30¢ anytime; skip if adverse BTC vs PTB exceeds cap. Time/ATR/vel/RSI off.
+Live stack: lift ≤30¢ inside time gate; skip if adverse BTC vs PTB exceeds Δ. ATR/vel/RSI off. Warmup 0.
 
-Skip reasons still coded: `atr_high`, `velocity_high`, `velocity_latched`, `adverse_delta`, `rsi_mix`, `rsi_unknown`. Entry ≤30¢ → TP (**5m/15m 60¢, 60m 70¢**); miss → settle.
+Live-matched balance pick (Binance Δ, TP else settle):
 
-Logged scalp `pnl` only (no counterfactual TP):
+| | entry≤ | n | WR | EV | Σ |
+|--|--:|--:|--:|--:|--:|
+| 5m | **150s** | 1018 | 73% | +$1.20 | +$1219 |
+| 15m | **450s** | 200 | 70% | +$0.94 | +$188 |
+| 60m | **900s** | 22 | 59% | +$0.91 | +$20 |
 
-| | ALL | Δ≤$10 | Δ≤$20 | Δ≤$50 |
-|--|--:|--:|--:|--:|
-| 5m | n=1666 WR43% Σ−$484 | **n=268 WR74% Σ+$211** | n=618 WR61% Σ+$235 | n=1385 WR46% Σ−$199 |
-| 15m | n=633 WR47% Σ−$111 | n=19 WR84% Σ+$19 | **n=41 WR71% Σ+$22** | n=348 WR50% Σ−$12 |
-| 60m | n=183 WR45% Σ−$51 | — | — | **n=6 WR67% Σ+$4** |
-
-Defaults: Δ **$10 / $20 / $50**; warmup 0; entry = full window; ATR 0. 60m n is tiny at WR≥65% — only Δ≤$50 clears that bar.
+Peak-WR alternatives were 90/150/900; full window dilutes WR. Skip reasons still coded: `atr_high`, `velocity_*`, `adverse_delta`, `rsi_*`.
 
 ## 2026-11-08 — IMPLEMENTED (superseded by Δ-only): ATR6h ≤ $500 + RSI readout
 

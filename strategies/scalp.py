@@ -1,10 +1,10 @@
 """Cheap-side scalper: buy a dumped ask, take-profit on a resting limit, else settle.
 
-Defaults (2026-11-09) — **Δ-only** for high WR (logged fills):
+Defaults (2026-11-09) — **Δ + time** (live-matched):
 
-* **Signal:** lift ask ≤30¢ (taker) on the cheaper side, any time in the window.
-* **Only filter:** signed adverse Δ ≤ $10 / $20 / $50 (5m / 15m / 60m).
-* **Off:** time gate, ATR, velocity latch, RSI mix (re-enable via CLI).
+* **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
+* **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 150s / 450s / 900s (5m / 15m / 60m).
+* **Off:** warmup, ATR, velocity latch, RSI mix (re-enable via CLI).
 * **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
@@ -14,11 +14,10 @@ from logs import format_time
 from sim import BaseSim, Order
 
 # Warm-up blackout end / first allowed entry elapsed (seconds into the window).
-# 0 / full-window = no time gate (2026-11-09 Δ-only).
 SCALP_WARMUP_SECONDS = {5: 0, 15: 0, 60: 0}
-SCALP_ENTRY_ELAPSED = {5: 300, 15: 900, 60: 3600}
+# Inclusive entry deadline (live-matched 2026-11-09): WR/PnL balance 150/450/900.
+SCALP_ENTRY_ELAPSED = {5: 150, 15: 450, 60: 900}
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
-# High-WR logged caps (2026-11-09): 5m≤$10 WR74%; 15m≤$20 WR71%; 60m≤$50 WR67%.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 20.0, 60: 50.0}
 # Adverse velocity caps ($/min of elapsed) by duration; 0 = off.
 SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 0.0, 15: 0.0, 60: 0.0}
