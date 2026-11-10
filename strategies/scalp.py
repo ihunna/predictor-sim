@@ -1,12 +1,14 @@
-"""Cheap-side scalper: buy a dumped ask, take-profit on a resting limit, else settle.
+"""Streak-fade scalper: after exactly N same winners, buy the other side ≤entry¢.
 
-Defaults (2026-11-10) — **Δ + time + rising velocity** (live-matched):
+Defaults (2026-11-10) — live-matched streak-fade as main scalp:
 
-* **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 150s / 450s / 900s;
-  adverse velocity ≤ $10 / $20 / $40 per min (rises with duration — more time to recover).
-* **Off:** warmup, ATR, RSI mix (re-enable via CLI).
-* **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
+* **Signal:** exact streak of 2 → buy the fade side when its ask ≤30¢ (taker).
+* **Re-arm:** after a failed fade (streak continues), skip until the streak breaks
+  and a new exact-2 forms. Longer streaks (3,4,…) are not re-faded.
+* **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 90s / 300s / 900s.
+* **Exit:** hold to settle (no TP).
+* **Off:** velocity, warmup, ATR, RSI mix (re-enable via CLI). ``--scalp-streak 0``
+  restores legacy cheaper-side scalp.
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
 """
@@ -16,16 +18,18 @@ from sim import BaseSim, Order
 
 # Warm-up blackout end / first allowed entry elapsed (seconds into the window).
 SCALP_WARMUP_SECONDS = {5: 0, 15: 0, 60: 0}
-# Inclusive entry deadline (live-matched 2026-11-09): WR/PnL balance 150/450/900.
-SCALP_ENTRY_ELAPSED = {5: 150, 15: 450, 60: 900}
+# Inclusive entry deadline (streak-fade live-matched): 5m ≤90s, 15m ≤300s, 60m ≤900s.
+SCALP_ENTRY_ELAPSED = {5: 90, 15: 300, 60: 900}
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 20.0, 60: 50.0}
-# Adverse velocity caps ($/min of elapsed); rises with duration (more recovery time).
-SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 10.0, 15: 20.0, 60: 40.0}
+# Adverse velocity ($/min); 0 = off (streak-fade: Δ + time is enough on all durs).
+SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 0.0, 15: 0.0, 60: 0.0}
 # 6h hourly ATR max (USD) by duration; 0 = off.
 SCALP_ATR_MAX_USD = {5: 0.0, 15: 0.0, 60: 0.0}
-# Resting take-profit (¢); 60m raised to 70 after live-matched replay (2026-11-03).
-SCALP_TARGET_CENTS = {5: 60, 15: 60, 60: 70}
+# Resting take-profit (¢); 0 = hold to settle (streak-fade default).
+SCALP_TARGET_CENTS = {5: 0, 15: 0, 60: 0}
+# Exact streak length required before fading (0 = legacy cheaper-side scalp).
+SCALP_STREAK_MIN = 2
 # Side-aware RSI good-mix (recent window lean): Up only if RSI below, Down only if above.
 SCALP_RSI_MIX_UP_BELOW = 40.0
 SCALP_RSI_MIX_DOWN_ABOVE = 60.0
@@ -65,12 +69,12 @@ def scalp_atr_max_usd(duration):
 
 
 def scalp_target_cents(duration):
-    """Default resting TP (¢) for this duration."""
-    return int(SCALP_TARGET_CENTS.get(int(duration), 60))
+    """Default resting TP (¢) for this duration (0 = hold)."""
+    return int(SCALP_TARGET_CENTS.get(int(duration), 0))
 
 
 class ScalpSim(BaseSim):
-    """Single-side: buy ask≤entry, TP all-in by default; miss holds and loses."""
+    """Streak-fade: exact-N → buy other side ≤entry¢; hold to settle by default."""
 
     strategy = "scalp"
     start_mode = "against"
@@ -81,15 +85,16 @@ class ScalpSim(BaseSim):
                  exit_left_seconds=0, enter_after_seconds=None,
                  stop_cents=0, stop_confirm_seconds=5, require_structure="",
                  rsi_zone=None, rsi_good_mix=None,
-                 rsi_mix_up_below=None, rsi_mix_down_above=None, **kwargs):
+                 rsi_mix_up_below=None, rsi_mix_down_above=None,
+                 streak_min=None, **kwargs):
         duration = args[1] if len(args) > 1 else kwargs.get("duration", 5)
-        # Unfilled cancel; default 0 (full window / Δ-only). Time gate via --cancel-left-pct.
+        # Unfilled cancel after entry deadline.
         kwargs.setdefault("cancel_left_pct", scalp_cancel_left_pct(duration))
         kwargs.setdefault("stop_loss_seconds", 0)
         kwargs.setdefault("max_prev_move_pct", 0.0)
         super().__init__(*args, **kwargs)
         self.entry_cents = max(1, int(entry_cents))
-        # 0 = hold to settle (no take-profit); None → per-duration default (60m=70).
+        # 0 = hold to settle (no take-profit); None → per-duration default.
         if target_cents is None:
             target_cents = scalp_target_cents(self.duration)
         self.target_cents = max(0, int(target_cents))
@@ -109,8 +114,7 @@ class ScalpSim(BaseSim):
             self.split_entry_cents < self.split_target_cents <= max(self.target_cents, self.split_entry_cents + 1)
         ):
             self.split_target_cents = self.entry_cents + 10
-        # Signed adverse-Δ skip (USD) at entry; 0 = off. None → per-duration default
-        # (5m $10 / 15m $20 / 60m $50).
+        # Signed adverse-Δ skip (USD) at entry; 0 = off. None → per-duration default.
         if delta_cap_usd is None:
             delta_cap_usd = scalp_delta_cap_usd(self.duration)
         self.delta_cap_usd = max(0.0, float(delta_cap_usd))
@@ -122,12 +126,11 @@ class ScalpSim(BaseSim):
         # Back-compat alias for older UI/tests that still read atr_24h.
         self.atr_24h = None
         # Layer 2: adverse USD per elapsed minute + window latch; 0 = off.
-        # None → per-duration default ($10/$20/$40).
         if velocity_max_usd_per_min is None:
             velocity_max_usd_per_min = scalp_velocity_max_usd_per_min(self.duration)
         self.velocity_max_usd_per_min = max(0.0, float(velocity_max_usd_per_min))
         self.exit_left_seconds = max(0, int(exit_left_seconds))
-        # Warm-up: no entries while elapsed < this (default 0 under Δ-only).
+        # Warm-up: no entries while elapsed < this (default 0).
         if enter_after_seconds is None:
             enter_after_seconds = scalp_warmup_seconds(self.duration)
         self.enter_after_seconds = max(0, int(enter_after_seconds))
@@ -153,6 +156,12 @@ class ScalpSim(BaseSim):
         self.rsi_mix_down_above = float(
             SCALP_RSI_MIX_DOWN_ABOVE if rsi_mix_down_above is None else rsi_mix_down_above
         )
+        # Exact streak length to fade (0 = legacy buy cheaper ≤entry).
+        if streak_min is None:
+            streak_min = SCALP_STREAK_MIN
+        self.streak_min = max(0, int(streak_min))
+        # window_start -> [outcome or None, unused]
+        self.history: dict = {}
 
     @property
     def ladder_active(self):
@@ -161,6 +170,89 @@ class ScalpSim(BaseSim):
     @property
     def split_active(self):
         return self.split_entry_cents > 0 and self.target_cents > 0 and self.contracts >= 2
+
+    def load_updown(self, path):
+        """Load BTC moves + outcomes into streak history."""
+        for start, outcome in super().load_updown(path):
+            entry = self.history.setdefault(start, [None, None])
+            if entry[0] is None:
+                entry[0] = outcome
+
+    def load_history(self, path):
+        """Seed streak history from an existing trades log (outcome column)."""
+        import csv
+        import os
+        if not path or not os.path.isfile(path):
+            return
+        with open(path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    start = int(row["window_start"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                outcome = row.get("outcome")
+                if outcome in ("Up", "Down", "Tie"):
+                    entry = self.history.setdefault(start, [None, None])
+                    if entry[0] is None:
+                        entry[0] = outcome
+
+    def settle(self, state, outcome, start_price, end_price, prev_move, maker_fee_bps=0,
+               taker_fee_bps=0, notes=()):
+        row = super().settle(
+            state, outcome, start_price, end_price, prev_move,
+            maker_fee_bps=maker_fee_bps, taker_fee_bps=taker_fee_bps, notes=notes,
+        )
+        if outcome in ("Up", "Down", "Tie"):
+            self.history.setdefault(state.window_start, [None, None])[0] = outcome
+        return row
+
+    def _streak_before(self, window_start):
+        """(count, side) ending at the previous window; None if last window unknown."""
+        step = self.duration * 60
+        last = self.history.get(window_start - step)
+        if not last or last[0] is None:
+            return None
+        if last[0] == "Tie":
+            return 1, "Tie"
+        count, start = 1, window_start - 2 * step
+        while count < 50:
+            entry = self.history.get(start)
+            if not entry or entry[0] is None:
+                break
+            if entry[0] != last[0]:
+                break
+            count, start = count + 1, start - step
+        return count, last[0]
+
+    def prepare_streak(self, window_start, prev_outcome=None):
+        """Update history from last outcome; set streak_before + fade side on state.
+
+        Returns skip reason or None when a fade is armed (or streak gate is off).
+        """
+        step = self.duration * 60
+        if prev_outcome in ("Up", "Down", "Tie"):
+            self.history.setdefault(window_start - step, [None, None])[0] = prev_outcome
+        state = self.current
+        here = state is not None and state.window_start == window_start
+        streak = self._streak_before(window_start)
+        if here:
+            state.streak_before = f"{streak[0]} {streak[1]}" if streak else "unknown"
+            state.scalp_fade_side = None
+        if self.streak_min <= 0:
+            return None
+        if streak is None:
+            return "streak_unknown"
+        n, side = streak
+        if side == "Tie" or n < self.streak_min:
+            return f"streak_{n}_{side.lower()}"
+        if n > self.streak_min:
+            # Failed fade / streak not broken — wait for a fresh exact-N after break.
+            return f"streak_{n}_{side.lower()}_not_broken"
+        fade = "Down" if side == "Up" else "Up"
+        if here:
+            state.scalp_fade_side = fade
+            state.bet_side = fade
+        return None
 
     def tp_text(self):
         if self.target_cents <= 0:
@@ -218,7 +310,7 @@ class ScalpSim(BaseSim):
         warmup = (
             f"enter {format_time(self.enter_after_seconds)}–"
             f"{format_time(self.entry_elapsed_max)} in"
-            if self.enter_after_seconds > 0 or self.entry_elapsed_max > 0
+            if self.enter_after_seconds > 0 or self.entry_elapsed_max < self.duration * 60
             else "enter from open"
         )
         cancel = (
@@ -226,8 +318,15 @@ class ScalpSim(BaseSim):
             if self.cancel_left_pct > 0 else "never cancel"
         )
         savior = self.savior_summary_text()
+        if self.streak_min > 0:
+            signal = (
+                f"exact streak {self.streak_min} → fade other side ask≤{self.entry_cents}¢ "
+                f"x{self.contracts} (skip not-broken until streak resets)"
+            )
+        else:
+            signal = f"buy cheaper ask≤{self.entry_cents}¢ x{self.contracts}"
         return (
-            f"Scalp: buy ask≤{self.entry_cents}¢ x{self.contracts} when {gate}, {rsi_gate}, "
+            f"Scalp: {signal} when {gate}, {rsi_gate}, "
             f"{tp}, {warmup}, {time_x}, {stop}, {cancel}, {savior} "
             f"| capital ${self.capital:.2f} ({self.capital_source})"
         )
@@ -283,24 +382,36 @@ class ScalpSim(BaseSim):
             return []
 
         entry = self.entry_cents / 100.0
-        candidates = []
-        if 0 < up_ask <= entry + 1e-9:
-            candidates.append(("Up", up_ask))
-        if 0 < down_ask <= entry + 1e-9:
-            candidates.append(("Down", down_ask))
+        fade_side = getattr(state, "scalp_fade_side", None)
+        if self.streak_min > 0:
+            if not fade_side:
+                # Live path should have armed via prepare_streak; if not, recompute once.
+                reason = self.prepare_streak(state.window_start)
+                if reason:
+                    state.notes.append(reason)
+                    state.action_reason = reason
+                    return []
+                fade_side = getattr(state, "scalp_fade_side", None)
+            if not fade_side:
+                return []
+            ask = up_ask if fade_side == "Up" else down_ask
+            candidates = [(fade_side, ask)] if 0 < ask <= entry + 1e-9 else []
+        else:
+            candidates = []
+            if 0 < up_ask <= entry + 1e-9:
+                candidates.append(("Up", up_ask))
+            if 0 < down_ask <= entry + 1e-9:
+                candidates.append(("Down", down_ask))
 
-        # Latch on adverse velocity for the cheaper side (same side the UI shows),
-        # even when ask is still > entry. Otherwise a 40$/min knife while the ask
-        # is 40–50¢ never arms the latch, then a cooled ~20$/min + ≤30¢ still enters.
-        # Bookkeeping runs outside the entry window too so a cooled late print cannot
-        # treat the window as quiet.
+        # Latch on adverse velocity for the side we would buy (fade or cheaper).
         tripped_now = False
         if self.velocity_max_usd_per_min > 0:
-            side_chk = None
-            if up_ask > 0 and down_ask > 0:
-                side_chk = "Up" if up_ask <= down_ask else "Down"
-            elif candidates:
-                side_chk = min(candidates, key=lambda x: x[1])[0]
+            side_chk = fade_side
+            if side_chk is None:
+                if up_ask > 0 and down_ask > 0:
+                    side_chk = "Up" if up_ask <= down_ask else "Down"
+                elif candidates:
+                    side_chk = min(candidates, key=lambda x: x[1])[0]
             if side_chk and self._velocity_trip(state, side_chk, remaining):
                 state.velocity_latched = True
                 tripped_now = True
@@ -331,7 +442,6 @@ class ScalpSim(BaseSim):
                 state.action_reason = "atr_high"
                 return []
 
-        # Layer 2 velocity is enforced via the latch above (trip on cheap ask → block).
         adverse = self._adverse_usd(state, side)
 
         # Layer 3 — signed adverse-Δ cap (USD) against the side we would buy.
@@ -363,20 +473,22 @@ class ScalpSim(BaseSim):
         state.action = "scalp"
         struct = state.structure or "any"
         rsi_bit = f"_rsi_{state.rsi:.0f}" if state.rsi is not None else ""
+        streak_bit = f"_fade_{state.streak_before.replace(' ', '')}" if state.streak_before else ""
         if self.ladder_active:
             state.action_reason = (
                 f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_ladder_"
                 f"{self.ladder_first_cents}_{self.target_cents}c"
-                f"_structure_{struct}{rsi_bit}"
+                f"_structure_{struct}{rsi_bit}{streak_bit}"
             )
         elif self.target_cents > 0:
             state.action_reason = (
                 f"buy_{side.lower()}_{int(round(ask * 100))}c_tp_{self.target_cents}c"
-                f"_structure_{struct}{rsi_bit}"
+                f"_structure_{struct}{rsi_bit}{streak_bit}"
             )
         else:
             state.action_reason = (
-                f"buy_{side.lower()}_{int(round(ask * 100))}c_hold_structure_{struct}{rsi_bit}"
+                f"buy_{side.lower()}_{int(round(ask * 100))}c_hold_structure_{struct}"
+                f"{rsi_bit}{streak_bit}"
             )
         state.notes.append(state.action_reason)
         state.scalp_stop_since = None
@@ -386,7 +498,6 @@ class ScalpSim(BaseSim):
         first_size = self.contracts // 2
         second_size = self.contracts - first_size
         if ask <= self.split_entry_cents / 100.0 + 1e-9:
-            # Already at/below the deep level: both halves fill now at the ask.
             state.scalp_split_pending = False
             return [
                 Order(side, "main", ask, first_size, remaining),
@@ -415,8 +526,6 @@ class ScalpSim(BaseSim):
             state.scalp_split_pending = False
             return
         if state.tp_sales or state.tp_side is not None:
-            # First half already exited (TP): the trade is done — do not buy
-            # the second half into a new position.
             state.scalp_split_pending = False
             state.notes.append("split_second_cancelled_first_exited")
             return
@@ -479,9 +588,6 @@ class ScalpSim(BaseSim):
             )
             return
 
-        # Ladder: first tranche is half the original position (floor for odd sizes);
-        # the remainder stays for the final target. A direct jump to the final
-        # target fills both tranches on the same tick at their own prices.
         total = state.contracts(side)
         sold = sum(c for s, c, _, _ in state.tp_sales if s == side)
         first_size = total // 2

@@ -202,8 +202,9 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
               split_entry=0, split_target=40, delta_cap=0.0,
               atr_max=0.0, velocity_max=0.0, atr_6h=None, atr_24h=None,
               trade_hours=None, hours_offset=0.0, enter_after_seconds=0,
-              rsi_good_mix=False):
-    """Warm-up / cancel / structure / savior / RSI / split / delta / ATR / velocity off by default so fill/TP tests stay place-on-cheap."""
+              rsi_good_mix=False, streak_min=0):
+    """Warm-up / cancel / structure / savior / RSI / split / delta / ATR / velocity / streak
+    off by default so fill/TP tests stay place-on-cheap (legacy cheaper-side)."""
     sim = ScalpSim("btc", duration, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default",
                    entry_cents=entry, target_cents=target, ladder_first_cents=ladder_first,
                    split_entry_cents=split_entry, split_target_cents=split_target,
@@ -215,7 +216,7 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
                    require_structure=require_structure, cancel_left_pct=cancel_left_pct,
                    savior_left_pct=savior_left_pct, savior_force_left_pct=savior_force_left_pct,
                    savior_stall_pct=savior_stall_pct, rsi_zone=rsi_zone,
-                   rsi_good_mix=rsi_good_mix)
+                   rsi_good_mix=rsi_good_mix, streak_min=streak_min)
     val = atr_6h if atr_6h is not None else atr_24h
     sim.atr_6h = val
     sim.atr_24h = val
@@ -223,36 +224,103 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
 
 
 def test_scalp_timing_defaults(tmp):
-    """All-in 30→TP; Δ + time (150/450/900) + vel $10/$20/$40; ATR off."""
+    """Streak-fade defaults: N=2, hold, entry 90/300/900, Δ 10/20/50, vel off."""
+    from strategies.scalp import SCALP_STREAK_MIN
+    assert SCALP_STREAK_MIN == 2
     assert SCALP_WARMUP_SECONDS == {5: 0, 15: 0, 60: 0}
-    assert SCALP_ENTRY_ELAPSED == {5: 150, 15: 450, 60: 900}
+    assert SCALP_ENTRY_ELAPSED == {5: 90, 15: 300, 60: 900}
     assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 20.0, 60: 50.0}
-    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 10.0, 15: 20.0, 60: 40.0}
+    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_ATR_MAX_USD == {5: 0.0, 15: 0.0, 60: 0.0}
-    assert SCALP_TARGET_CENTS == {5: 60, 15: 60, 60: 70}
+    assert SCALP_TARGET_CENTS == {5: 0, 15: 0, 60: 0}
     assert ATR_HOURS == 6
     assert scalp_warmup_seconds(5) == 0
-    assert scalp_warmup_seconds(15) == 0
-    assert scalp_warmup_seconds(60) == 0
-    assert abs(scalp_cancel_left_pct(5) - 50.0) < 1e-9
-    assert abs(scalp_cancel_left_pct(15) - 50.0) < 1e-9
+    assert abs(scalp_cancel_left_pct(5) - 70.0) < 1e-9
+    assert abs(scalp_cancel_left_pct(15) - 600 / 900 * 100) < 1e-9
     assert abs(scalp_cancel_left_pct(60) - 75.0) < 1e-9
-    for dur, cancel_left in ((5, 150), (15, 450), (60, 2700)):
+    for dur, cancel_left in ((5, 210), (15, 600), (60, 2700)):
         sim = ScalpSim("btc", dur, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default")
         assert sim.entry_cents == 30 and sim.target_cents == SCALP_TARGET_CENTS[dur]
         assert sim.target_cents == scalp_target_cents(dur)
+        assert sim.streak_min == 2
         assert sim.split_entry_cents == 0 and not sim.split_active
         assert sim.enter_after_seconds == scalp_warmup_seconds(dur)
         assert sim.entry_elapsed_max == SCALP_ENTRY_ELAPSED[dur]
         assert abs(sim.cancel_left_seconds() - cancel_left) < 1e-6
         assert scalp_delta_cap_usd(dur) == SCALP_DELTA_CAP_USD[dur]
         assert scalp_velocity_max_usd_per_min(dur) == SCALP_VELOCITY_MAX_USD_PER_MIN[dur]
-        assert scalp_atr_max_usd(dur) == SCALP_ATR_MAX_USD[dur]
-        assert sim.atr_max_usd == SCALP_ATR_MAX_USD[dur]
         assert sim.velocity_max_usd_per_min == SCALP_VELOCITY_MAX_USD_PER_MIN[dur]
         assert sim.delta_cap_usd == SCALP_DELTA_CAP_USD[dur]
         assert sim.rsi_good_mix is False
-        assert sim.rsi_mix_up_below == 40.0 and sim.rsi_mix_down_above == 60.0
+        assert "exact streak 2" in sim.summarize() and "hold to settle" in sim.summarize()
+
+
+def _seed_streak(sim, window_start, side, n):
+    step = sim.duration * 60
+    for i in range(1, n + 1):
+        sim.history[window_start - i * step] = [side, None]
+
+
+def test_scalp_streak_fade_buys_other_side(tmp):
+    """Exact 2 Up → fade Down when Down ask ≤30¢ (hold)."""
+    sim = scalp_sim(tmp, target=0, streak_min=2, ladder_first=0)
+    _seed_streak(sim, START, "Up", 2)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.76, 0.25),  # Down cheap
+        (100, 0.40, 0.40),
+    ])
+    assert state.action == "scalp"
+    assert state.bet_side == "Down" and state.scalp_fade_side == "Down"
+    assert state.down_fill_price == 0.25
+    assert not state.up_fill_price
+    assert "fade_2Up" in state.action_reason
+    assert state.streak_before == "2 Up"
+
+
+def test_scalp_streak_unknown_skips(tmp):
+    """No history → streak_unknown, no entry even if ask is cheap."""
+    sim = scalp_sim(tmp, target=0, streak_min=2, ladder_first=0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+    ])
+    assert state.action != "scalp" and state.contracts("Up") == 0
+    assert "streak_unknown" in state.notes
+
+
+def test_scalp_streak_short_skips(tmp):
+    """Streak of 1 < N=2 → skip."""
+    sim = scalp_sim(tmp, target=0, streak_min=2, ladder_first=0)
+    _seed_streak(sim, START, "Down", 1)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),  # Up cheap would be the fade if N=1
+    ])
+    assert state.action != "scalp"
+    assert any(n.startswith("streak_1_") for n in state.notes)
+
+
+def test_scalp_streak_not_broken_skips(tmp):
+    """Streak of 3 > N=2 → not_broken until reset; no re-fade."""
+    sim = scalp_sim(tmp, target=0, streak_min=2, ladder_first=0)
+    _seed_streak(sim, START, "Up", 3)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.76, 0.25),
+    ])
+    assert state.action != "scalp"
+    assert any("not_broken" in n for n in state.notes)
+
+
+def test_scalp_streak_zero_is_legacy_cheaper(tmp):
+    """streak_min=0 → buy cheaper side (legacy), no streak gate."""
+    sim = scalp_sim(tmp, target=0, streak_min=0, ladder_first=0)
+    state = run_window(sim, [
+        (0, 0.50, 0.51),
+        (20, 0.25, 0.76),
+    ])
+    assert state.action == "scalp" and state.up_fill_price == 0.25
 
 
 def test_atr_from_ranges(tmp):
@@ -1683,6 +1751,11 @@ def main():
             test_dual_waits_when_delta_loud,
             test_quiet_dual_waits_for_enter_after,
             test_scalp_timing_defaults,
+            test_scalp_streak_fade_buys_other_side,
+            test_scalp_streak_unknown_skips,
+            test_scalp_streak_short_skips,
+            test_scalp_streak_not_broken_skips,
+            test_scalp_streak_zero_is_legacy_cheaper,
             test_atr_from_ranges,
             test_scalp_atr_gate,
             test_scalp_velocity_gate,

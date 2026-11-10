@@ -431,6 +431,8 @@ class WindowState:
     notes: list = field(default_factory=list)
     # Scalp: once adverse velocity exceeds the cap on a cheap ask this window, stay blocked.
     velocity_latched: bool = False
+    # Scalp streak-fade: side to buy after exact-N (None = legacy cheaper-side / not armed).
+    scalp_fade_side: str | None = None
     # Savior exit (one-sided holds): locked once when remaining first hits savior arm.
     savior_cut_cents: int | None = None
     savior_reason: str = ""

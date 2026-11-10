@@ -733,7 +733,14 @@ class Dashboard:
                       if sim.cancel_left_pct > 0 else "no cancel")
             savior = (sim.savior_summary_text() if hasattr(sim, "savior_summary_text")
                       else "no savior")
-            skip = (f"buy ≤{sim.entry_cents}¢ when structure={need} · {rsi_gate} · {tp} · "
+            streak_n = getattr(sim, "streak_min", 0) or 0
+            if streak_n > 0:
+                fade = getattr(state, "scalp_fade_side", None) if state is not None else None
+                fade_bit = f" → {fade}" if fade else ""
+                signal = f"exact streak {streak_n}{fade_bit} fade ≤{sim.entry_cents}¢"
+            else:
+                signal = f"buy ≤{sim.entry_cents}¢"
+            skip = (f"{signal} when structure={need} · {rsi_gate} · {tp} · "
                     f"{window} · {time_x} · {stop} · {cancel} · {savior}")
             skip += _struct_rsi_now()
             if state is not None and state.action:
