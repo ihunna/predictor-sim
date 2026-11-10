@@ -1,20 +1,23 @@
 # Decision log — scalp
 
-## 2026-11-10 — IMPLEMENTED: streak-fade as main scalp (current defaults)
+## 2026-11-10 — REVERT: cheaper-side as main scalp (current defaults)
 
-Exact streak of **2** same winners → buy the **other** side ask≤30¢; hold to settle.
-Longer streaks skip (`not_broken`) until the run breaks and a fresh exact-2 forms.
-`--scalp-streak 0` restores legacy cheaper-side scalp.
+Live-matched head-to-head: old cheaper-side (Δ + time + rising vel + TP) beat streak-fade
+on total $ and sample size (combined Σ ~+$679 / n=569 vs streak-fade hold Σ ~+$132 / n=77).
+Streak-fade stays optional via `--scalp-streak N`.
 
 | Duration | Time gate | Velocity $/min | Δ cap | TP |
 |----------|-----------|----------------|-------|----|
-| 5m | ≤**90s** | **off** | $10 | **hold** |
-| 15m | ≤**300s** | **off** | $20 | **hold** |
-| 60m | ≤**900s** | **off** | $50 | **hold** |
+| 5m | ≤**150s** | **$10** | $10 | **60¢** |
+| 15m | ≤**450s** | **$20** | $20 | **60¢** |
+| 60m | ≤**900s** | **$40** | $50 | **70¢** |
 
-Live-matched (Binance Δ, lift ask, hold; quiet/ATR/RSI/vel off): exact-N=2 beat bare/N=3+ and beat TP60/70 on the good setups. Prefer hold over early TP. Vel left off all durs for uniform Δ+time gates (`--scalp-velocity-max` to re-enable).
+## 2026-11-10 — TRIED then reverted: streak-fade as main scalp
 
-## 2026-11-10 — IMPLEMENTED (superseded): rising velocity $10/$20/$40
+Exact streak of **2** → buy other side ≤30¢; hold; entry 90/300/900; vel off. Higher EV/trade
+on thin n; worse Σ than cheaper-side. Code kept behind `--scalp-streak`.
+
+## 2026-11-10 — IMPLEMENTED: rising velocity $10/$20/$40
 
 | Duration | Time gate | Velocity $/min | Δ cap |
 |----------|-----------|----------------|-------|
@@ -22,7 +25,7 @@ Live-matched (Binance Δ, lift ask, hold; quiet/ATR/RSI/vel off): exact-N=2 beat
 | 15m | ≤450s | **$20** | $20 |
 | 60m | ≤900s | **$40** | $50 |
 
-Longer windows allow faster adverse moves (more time to recover). Live-matched entry-time vel (no latch compare) under Δ+time: 5m WR 73%→76% EV+$1.20→+$1.31; 15m/60m ≈ unchanged. Latch still on when vel > 0. ATR/RSI off. Superseded same day by streak-fade main scalp.
+Longer windows allow faster adverse moves (more time to recover). Live-matched entry-time vel (no latch compare) under Δ+time: 5m WR 73%→76% EV+$1.20→+$1.31; 15m/60m ≈ unchanged. Latch still on when vel > 0. ATR/RSI off.
 
 ## 2026-11-09 — IMPLEMENTED: Δ + WR/PnL-balance time gates
 

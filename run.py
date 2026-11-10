@@ -479,10 +479,11 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: streak-fade — exact 2 same winners → buy other side ≤30¢; "
-                             "hold to settle; Δ ≤$10/$20/$50; entry ≤90s/300s/900s; vel off; "
-                             "skip not-broken until streak resets "
-                             "(see --scalp-streak / --scalp-delta-cap / --scalp-target). "
+                             "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); Δ ≤$10/$20/$50 + "
+                             "entry ≤150s/450s/900s + vel ≤$10/$20/$40/min; ATR/RSI off "
+                             "(see --scalp-delta-cap / --scalp-velocity-max / "
+                             "--cancel-left-pct / --scalp-target). "
+                             "--scalp-streak N for optional exact-N fade. "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -557,13 +558,14 @@ def parse_args():
 
     parser.add_argument("--scalp-streak", type=int, default=None, metavar="N",
                         help="Scalp: exact streak length to fade (buy other side). "
-                             "Default 2; 0 = legacy cheaper-side scalp (no streak gate). "
+                             "Default 0 = cheaper-side scalp; e.g. 2 = streak-fade. "
                              "Longer streaks skip until the run breaks.")
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
-                        help="Scalp: buy when the fade side's ask is at or below this (default 30).")
+                        help="Scalp: buy when a side's ask is at or below this (default 30).")
     parser.add_argument("--scalp-target", type=int, default=None, metavar="CENTS",
                         help="Scalp: final take-profit when bid reaches this. "
-                             "Default: 0 (hold to settle); miss without TP = −entry at settle.")
+                             "Default: 5m/15m 60¢ / 60m 70¢; 0 = hold to settle; "
+                             "miss without TP = −entry at settle.")
     parser.add_argument("--scalp-ladder-first", type=int, default=0, metavar="CENTS",
                         help="Scalp (legacy, split off): sell half the position when bid reaches this "
                              "first ladder level, the rest at --scalp-target (default 0 = off; "
@@ -583,8 +585,8 @@ def parse_args():
                              "skip high-vol regimes. Fail skips only this window.")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this "
-                             "(window latch). Default off all durations; 0 = off. "
-                             "Favorable/flat always passes.")
+                             "(window latch). Default: 5m $10 / 15m $20 / 60m $40 per min "
+                             "(rises with duration); 0 = off. Favorable/flat always passes.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",
@@ -622,7 +624,7 @@ def parse_args():
     parser.add_argument("--cancel-left-pct", type=float, default=None,
                         help="Cancel unfilled when this much of the window is left, in percent. "
                              "Dual default 67 ≈ first third. Scalp default from entry gate "
-                             "(5m/15m/60m → ~70%/67%/75% left ≈ entry ≤90s/300s/900s). "
+                             "(5m/15m/60m → 50%/50%/75% left ≈ entry ≤150s/450s/900s). "
                              "0 = never cancel.")
     parser.add_argument("--savior-left-pct", type=float, default=0.0,
                         help="On one-sided holds, arm savior when this much of the window is left "

@@ -1,14 +1,13 @@
-"""Streak-fade scalper: after exactly N same winners, buy the other side ≤entry¢.
+"""Cheap-side scalper: buy a dumped ask ≤entry¢, take-profit (or hold), else settle.
 
-Defaults (2026-11-10) — live-matched streak-fade as main scalp:
+Defaults (2026-11-10) — live-matched cheaper-side as main scalp (streak-fade optional):
 
-* **Signal:** exact streak of 2 → buy the fade side when its ask ≤30¢ (taker).
-* **Re-arm:** after a failed fade (streak continues), skip until the streak breaks
-  and a new exact-2 forms. Longer streaks (3,4,…) are not re-faded.
-* **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 90s / 300s / 900s.
-* **Exit:** hold to settle (no TP).
-* **Off:** velocity, warmup, ATR, RSI mix (re-enable via CLI). ``--scalp-streak 0``
-  restores legacy cheaper-side scalp.
+* **Signal:** buy the cheaper side when its ask ≤30¢ (taker).
+* **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 150s / 450s / 900s;
+  velocity ≤ $10 / $20 / $40 per min (window latch).
+* **Exit:** TP 60¢ / 60¢ / 70¢ (miss → settle).
+* **Off:** warmup, ATR, RSI mix. ``--scalp-streak N`` enables exact-N fade of the
+  other side (skip not-broken until the streak resets).
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
 """
@@ -18,18 +17,18 @@ from sim import BaseSim, Order
 
 # Warm-up blackout end / first allowed entry elapsed (seconds into the window).
 SCALP_WARMUP_SECONDS = {5: 0, 15: 0, 60: 0}
-# Inclusive entry deadline (streak-fade live-matched): 5m ≤90s, 15m ≤300s, 60m ≤900s.
-SCALP_ENTRY_ELAPSED = {5: 90, 15: 300, 60: 900}
+# Inclusive entry deadline (live-matched balance): 5m ≤150s, 15m ≤450s, 60m ≤900s.
+SCALP_ENTRY_ELAPSED = {5: 150, 15: 450, 60: 900}
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 20.0, 60: 50.0}
-# Adverse velocity ($/min); 0 = off (streak-fade: Δ + time is enough on all durs).
-SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 0.0, 15: 0.0, 60: 0.0}
+# Adverse velocity ($/min); rises with duration. 0 = off.
+SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 10.0, 15: 20.0, 60: 40.0}
 # 6h hourly ATR max (USD) by duration; 0 = off.
 SCALP_ATR_MAX_USD = {5: 0.0, 15: 0.0, 60: 0.0}
-# Resting take-profit (¢); 0 = hold to settle (streak-fade default).
-SCALP_TARGET_CENTS = {5: 0, 15: 0, 60: 0}
-# Exact streak length required before fading (0 = legacy cheaper-side scalp).
-SCALP_STREAK_MIN = 2
+# Resting take-profit (¢); 0 = hold to settle.
+SCALP_TARGET_CENTS = {5: 60, 15: 60, 60: 70}
+# Exact streak length to fade other side (0 = cheaper-side scalp, the default).
+SCALP_STREAK_MIN = 0
 # Side-aware RSI good-mix (recent window lean): Up only if RSI below, Down only if above.
 SCALP_RSI_MIX_UP_BELOW = 40.0
 SCALP_RSI_MIX_DOWN_ABOVE = 60.0
@@ -74,7 +73,7 @@ def scalp_target_cents(duration):
 
 
 class ScalpSim(BaseSim):
-    """Streak-fade: exact-N → buy other side ≤entry¢; hold to settle by default."""
+    """Buy cheaper ask ≤entry¢ → TP (or hold); optional exact-N streak-fade."""
 
     strategy = "scalp"
     start_mode = "against"
