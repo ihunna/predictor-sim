@@ -1,10 +1,11 @@
 """Cheap-side scalper: buy a dumped ask, take-profit on a resting limit, else settle.
 
-Defaults (2026-11-09) — **Δ + time** (live-matched):
+Defaults (2026-11-10) — **Δ + time + rising velocity** (live-matched):
 
 * **Signal:** lift ask ≤30¢ (taker) on the cheaper side.
-* **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 150s / 450s / 900s (5m / 15m / 60m).
-* **Off:** warmup, ATR, velocity latch, RSI mix (re-enable via CLI).
+* **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 150s / 450s / 900s;
+  adverse velocity ≤ $10 / $20 / $40 per min (rises with duration — more time to recover).
+* **Off:** warmup, ATR, RSI mix (re-enable via CLI).
 * **Exit:** resting limit TP (5m/15m 60¢, 60m 70¢ maker); miss → hold to settle.
 
 Bid = ``1 − other_ask``. Optional split/ladder/RSI/structure/time-exit/stop via flags.
@@ -19,8 +20,8 @@ SCALP_WARMUP_SECONDS = {5: 0, 15: 0, 60: 0}
 SCALP_ENTRY_ELAPSED = {5: 150, 15: 450, 60: 900}
 # Signed adverse-Δ skip caps (USD) at entry — against the side we would buy.
 SCALP_DELTA_CAP_USD = {5: 10.0, 15: 20.0, 60: 50.0}
-# Adverse velocity caps ($/min of elapsed) by duration; 0 = off.
-SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 0.0, 15: 0.0, 60: 0.0}
+# Adverse velocity caps ($/min of elapsed); rises with duration (more recovery time).
+SCALP_VELOCITY_MAX_USD_PER_MIN = {5: 10.0, 15: 20.0, 60: 40.0}
 # 6h hourly ATR max (USD) by duration; 0 = off.
 SCALP_ATR_MAX_USD = {5: 0.0, 15: 0.0, 60: 0.0}
 # Resting take-profit (¢); 60m raised to 70 after live-matched replay (2026-11-03).
@@ -121,7 +122,7 @@ class ScalpSim(BaseSim):
         # Back-compat alias for older UI/tests that still read atr_24h.
         self.atr_24h = None
         # Layer 2: adverse USD per elapsed minute + window latch; 0 = off.
-        # None → per-duration default (currently 0 / paused; prior 20/30/60).
+        # None → per-duration default ($10/$20/$40).
         if velocity_max_usd_per_min is None:
             velocity_max_usd_per_min = scalp_velocity_max_usd_per_min(self.duration)
         self.velocity_max_usd_per_min = max(0.0, float(velocity_max_usd_per_min))

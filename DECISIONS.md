@@ -1,14 +1,22 @@
 # Decision log — scalp
 
-## 2026-11-09 — IMPLEMENTED: Δ + WR/PnL-balance time gates (current defaults)
+## 2026-11-10 — IMPLEMENTED: rising velocity $10/$20/$40 (current defaults)
+
+| Duration | Time gate | Velocity $/min | Δ cap |
+|----------|-----------|----------------|-------|
+| 5m | ≤150s | **$10** | $10 |
+| 15m | ≤450s | **$20** | $20 |
+| 60m | ≤900s | **$40** | $50 |
+
+Longer windows allow faster adverse moves (more time to recover). Live-matched entry-time vel (no latch compare) under Δ+time: 5m WR 73%→76% EV+$1.20→+$1.31; 15m/60m ≈ unchanged. Latch still on when vel > 0. ATR/RSI off.
+
+## 2026-11-09 — IMPLEMENTED: Δ + WR/PnL-balance time gates
 
 | Duration | Lifespan | Time gate (elapsed) | ATR6h | Velocity | Δ cap |
 |----------|----------|---------------------|-------|----------|-------|
-| 5m | 300s | **≤150s** | **off** | **off** | **$10** |
-| 15m | 900s | **≤450s** | **off** | **off** | **$20** |
-| 60m | 3600s | **≤900s** | **off** | **off** | **$50** |
-
-Live stack: lift ≤30¢ inside time gate; skip if adverse BTC vs PTB exceeds Δ. ATR/vel/RSI off. Warmup 0.
+| 5m | 300s | **≤150s** | **off** | (later $10) | **$10** |
+| 15m | 900s | **≤450s** | **off** | (later $20) | **$20** |
+| 60m | 3600s | **≤900s** | **off** | (later $40) | **$50** |
 
 Live-matched balance pick (Binance Δ, TP else settle):
 
@@ -17,8 +25,6 @@ Live-matched balance pick (Binance Δ, TP else settle):
 | 5m | **150s** | 1018 | 73% | +$1.20 | +$1219 |
 | 15m | **450s** | 200 | 70% | +$0.94 | +$188 |
 | 60m | **900s** | 22 | 59% | +$0.91 | +$20 |
-
-Peak-WR alternatives were 90/150/900; full window dilutes WR. Skip reasons still coded: `atr_high`, `velocity_*`, `adverse_delta`, `rsi_*`.
 
 ## 2026-11-08 — IMPLEMENTED (superseded by Δ-only): ATR6h ≤ $500 + RSI readout
 

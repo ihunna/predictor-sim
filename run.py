@@ -470,9 +470,9 @@ def parse_args():
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
                              "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); Δ ≤$10/$20/$50 + "
-                             "entry ≤150s/450s/900s; ATR/vel/RSI off "
-                             "(see --scalp-delta-cap / --cancel-left-pct / "
-                             "--scalp-atr-max / --scalp-rsi-mix / --scalp-target). "
+                             "entry ≤150s/450s/900s + vel ≤$10/$20/$40/min; ATR/RSI off "
+                             "(see --scalp-delta-cap / --scalp-velocity-max / "
+                             "--cancel-left-pct / --scalp-target). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -570,8 +570,8 @@ def parse_args():
                              "skip high-vol regimes. Fail skips only this window.")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this "
-                             "(window latch). Default: 0 (paused); prior caps were "
-                             "5m $20 / 15m $30 / 60m $60 per min. Favorable/flat always passes.")
+                             "(window latch). Default: 5m $10 / 15m $20 / 60m $40 per min "
+                             "(rises with duration); 0 = off. Favorable/flat always passes.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",

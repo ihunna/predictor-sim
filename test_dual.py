@@ -223,11 +223,11 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
 
 
 def test_scalp_timing_defaults(tmp):
-    """All-in 30→TP; Δ + balance time gates (150/450/900); caps $10/$20/$50; ATR/vel off."""
+    """All-in 30→TP; Δ + time (150/450/900) + vel $10/$20/$40; ATR off."""
     assert SCALP_WARMUP_SECONDS == {5: 0, 15: 0, 60: 0}
     assert SCALP_ENTRY_ELAPSED == {5: 150, 15: 450, 60: 900}
     assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 20.0, 60: 50.0}
-    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 0.0, 15: 0.0, 60: 0.0}
+    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 10.0, 15: 20.0, 60: 40.0}
     assert SCALP_ATR_MAX_USD == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_TARGET_CENTS == {5: 60, 15: 60, 60: 70}
     assert ATR_HOURS == 6
