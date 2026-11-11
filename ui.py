@@ -773,7 +773,7 @@ class Dashboard:
                 atr_bit = f"${atr_now:.0f}" if atr_now is not None else "?"
                 prices += f" · ATR6h≤${sim.atr_max_usd:.0f} ({atr_bit})"
             if getattr(sim, "velocity_max_usd_per_min", 0):
-                prices += f" · vel≤${sim.velocity_max_usd_per_min:.0f}/m (latch)"
+                prices += f" · vel≤${sim.velocity_max_usd_per_min:.0f}/m"
             if getattr(sim, "delta_cap_usd", 0):
                 prices += f" · Δcap ${sim.delta_cap_usd:.0f}"
         elif sim.strategy == "dual":

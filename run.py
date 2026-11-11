@@ -585,8 +585,8 @@ def parse_args():
                              "skip high-vol regimes. Fail skips only this window.")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this "
-                             "(window latch). Default: 5m $10 / 15m $20 / 60m $40 per min "
-                             "(rises with duration); 0 = off. Favorable/flat always passes.")
+                             "at entry (no window latch). Default: 5m $10 / 15m $20 / 60m $40 "
+                             "per min; 0 = off. Favorable/flat always passes.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",

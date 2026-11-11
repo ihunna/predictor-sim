@@ -1,5 +1,12 @@
 # Decision log — scalp
 
+## 2026-11-11 — IMPLEMENTED: drop velocity window latch (all durations)
+
+Live-matched since current filters (5m): among Δ+time-OK windows that vel blocked,
+**latch-only** n=13 WR100% Σ+$31; entry-time vel only n=1 Σ−$2. Latch was leaving
+cooled setups on the table. Velocity still checked **at entry** ($10/$20/$40); no
+`velocity_latched` sticky skip. Notes: `velocity_high` only when entry tick is hot.
+
 ## 2026-11-10 — REVERT: cheaper-side as main scalp (current defaults)
 
 Live-matched head-to-head: old cheaper-side (Δ + time + rising vel + TP) beat streak-fade

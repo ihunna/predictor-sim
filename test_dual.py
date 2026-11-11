@@ -346,10 +346,8 @@ def test_scalp_atr_gate(tmp):
 
 
 def test_scalp_velocity_gate(tmp):
-    """High adverse early blocks; same adverse only later (no prior trip) may pass."""
+    """Entry-time vel only: hot at fill tick blocks; same adverse later may pass."""
     # −$30 vs PTB buying Up; at elapsed=20s → 90$/min > 60; at 60s → 30$/min ≤ 60.
-    # Latch now trips on the cheaper side even before ask ≤30, so the early path
-    # moves BTC only once the cheap ask prints; the late path stays quiet until 60s.
     early = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
     state = run_window(early, [
         (0, 0.50, 0.51, 100_000.0),
@@ -365,36 +363,28 @@ def test_scalp_velocity_gate(tmp):
     assert state2.action == "scalp" and state2.contracts("Up") == 8
 
 
-def test_scalp_velocity_latch(tmp):
-    """Once velocity trips on a cheap ask, later cooled velocity still cannot enter."""
-    # Same −$30 adverse: 20s → 90$/min trips latch; 60s → 30$/min would pass without latch.
+def test_scalp_velocity_no_latch_after_cool(tmp):
+    """Early hot tick does not sticky-block; cooled vel at cheap ask may enter."""
     sim = scalp_sim(tmp, ladder_first=0, velocity_max=60.0, delta_cap=200.0)
     state = run_window(sim, [
         (0, 0.50, 0.51, 100_000.0),
-        (20, 0.25, 0.76, 99_970.0),  # velocity_high → latch
-        (60, 0.25, 0.76, 99_970.0),  # cooled $/min but window no longer quiet
+        (20, 0.25, 0.76, 99_970.0),  # 90$/min — would skip this tick
+        (60, 0.25, 0.76, 99_970.0),  # 30$/min — no latch, may enter
     ], ptb=100_000.0)
-    assert state.action != "scalp" and state.contracts("Up") == 0
-    assert state.velocity_latched
-    assert "velocity_high" in state.notes
-    assert "velocity_latched" in state.notes
+    assert state.action == "scalp" and state.contracts("Up") == 8
+    assert "velocity_latched" not in state.notes
 
 
-def test_scalp_velocity_latch_before_cheap_ask(tmp):
-    """High vel while ask still >30¢ must latch; later cheap + cooled vel cannot enter."""
-    # −$20 adverse: at 20s → 60$/min > 20 cap while Up ask is 45¢ (not a candidate).
-    # At 60s → 20$/min on the nose with ask 25¢ — without pre-cheap latch this would fill.
+def test_scalp_velocity_no_precheap_latch(tmp):
+    """High vel while ask >entry does not latch; later cheap + cooled vel can enter."""
     sim = scalp_sim(tmp, ladder_first=0, velocity_max=20.0, delta_cap=200.0,
                     enter_after_seconds=10, cancel_left_pct=180 / 300 * 100)
     state = run_window(sim, [
         (0, 0.50, 0.51, 100_000.0),
-        (20, 0.45, 0.56, 99_980.0),  # vel high, ask not cheap → still latch
-        (60, 0.25, 0.76, 99_980.0),  # cooled + cheap — must stay blocked
+        (20, 0.45, 0.56, 99_980.0),  # vel high, ask not cheap — ignored (no latch)
+        (60, 0.25, 0.76, 99_980.0),  # cooled + cheap — enter
     ], ptb=100_000.0)
-    assert state.action != "scalp" and state.contracts("Up") == 0
-    assert state.velocity_latched
-    assert "velocity_high" in state.notes
-    assert "velocity_latched" in state.notes
+    assert state.action == "scalp" and state.contracts("Up") == 8
 
 
 def test_scalp_gate_order_atr_before_delta(tmp):
@@ -1759,8 +1749,8 @@ def main():
             test_atr_from_ranges,
             test_scalp_atr_gate,
             test_scalp_velocity_gate,
-            test_scalp_velocity_latch,
-            test_scalp_velocity_latch_before_cheap_ask,
+            test_scalp_velocity_no_latch_after_cool,
+            test_scalp_velocity_no_precheap_latch,
             test_scalp_gate_order_atr_before_delta,
             test_scalp_warmup_blocks_then_allows,
             test_scalp_entry_allowed_at_inclusive_max,

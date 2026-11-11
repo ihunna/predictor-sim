@@ -429,7 +429,7 @@ class WindowState:
     maker_fee_bps: int = 0
     taker_fee_bps: int = 0
     notes: list = field(default_factory=list)
-    # Scalp: once adverse velocity exceeds the cap on a cheap ask this window, stay blocked.
+    # Scalp legacy field (latch removed 2026-11-11); kept so old logs/UI don't break.
     velocity_latched: bool = False
     # Scalp streak-fade: side to buy after exact-N (None = legacy cheaper-side / not armed).
     scalp_fade_side: str | None = None

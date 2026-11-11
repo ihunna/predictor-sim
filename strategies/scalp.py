@@ -4,7 +4,7 @@ Defaults (2026-11-10) — live-matched cheaper-side as main scalp (streak-fade o
 
 * **Signal:** buy the cheaper side when its ask ≤30¢ (taker).
 * **Filters:** adverse Δ ≤ $10 / $20 / $50; entry ≤ 150s / 450s / 900s;
-  velocity ≤ $10 / $20 / $40 per min (window latch).
+  velocity ≤ $10 / $20 / $40 per min at entry (no window latch).
 * **Exit:** TP 60¢ / 60¢ / 70¢ (miss → settle).
 * **Off:** warmup, ATR, RSI mix. ``--scalp-streak N`` enables exact-N fade of the
   other side (skip not-broken until the streak resets).
@@ -124,7 +124,7 @@ class ScalpSim(BaseSim):
         self.atr_6h: float | None = None  # set by run.py / tests
         # Back-compat alias for older UI/tests that still read atr_24h.
         self.atr_24h = None
-        # Layer 2: adverse USD per elapsed minute + window latch; 0 = off.
+        # Layer 2: adverse USD per elapsed minute at entry only (no latch); 0 = off.
         if velocity_max_usd_per_min is None:
             velocity_max_usd_per_min = scalp_velocity_max_usd_per_min(self.duration)
         self.velocity_max_usd_per_min = max(0.0, float(velocity_max_usd_per_min))
@@ -278,7 +278,7 @@ class ScalpSim(BaseSim):
         if self.atr_max_usd > 0:
             tp += f", ATR6h≤${self.atr_max_usd:.0f}"
         if self.velocity_max_usd_per_min > 0:
-            tp += f", velocity≤${self.velocity_max_usd_per_min:.0f}/min (window latch)"
+            tp += f", velocity≤${self.velocity_max_usd_per_min:.0f}/min at entry"
         if self.delta_cap_usd > 0:
             tp += f", skip if adverse Δ>${self.delta_cap_usd:.0f} at entry"
         if self.trade_hours:
@@ -402,28 +402,6 @@ class ScalpSim(BaseSim):
             if 0 < down_ask <= entry + 1e-9:
                 candidates.append(("Down", down_ask))
 
-        # Latch on adverse velocity for the side we would buy (fade or cheaper).
-        tripped_now = False
-        if self.velocity_max_usd_per_min > 0:
-            side_chk = fade_side
-            if side_chk is None:
-                if up_ask > 0 and down_ask > 0:
-                    side_chk = "Up" if up_ask <= down_ask else "Down"
-                elif candidates:
-                    side_chk = min(candidates, key=lambda x: x[1])[0]
-            if side_chk and self._velocity_trip(state, side_chk, remaining):
-                state.velocity_latched = True
-                tripped_now = True
-
-        if state.velocity_latched:
-            if tripped_now:
-                state.notes.append("velocity_high")
-                state.action_reason = "velocity_high"
-            else:
-                state.notes.append("velocity_latched")
-                state.action_reason = "velocity_latched"
-            return []
-
         if not self._in_entry_window(state, remaining):
             return []
         if not self._entry_ok(state):
@@ -440,6 +418,12 @@ class ScalpSim(BaseSim):
                 state.notes.append("atr_high")
                 state.action_reason = "atr_high"
                 return []
+
+        # Layer 2 — adverse velocity at this entry tick only (no window latch).
+        if self._velocity_trip(state, side, remaining):
+            state.notes.append("velocity_high")
+            state.action_reason = "velocity_high"
+            return []
 
         adverse = self._adverse_usd(state, side)
 
