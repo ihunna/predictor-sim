@@ -1,5 +1,31 @@
 # Decision log — scalp
 
+## 2026-11-11 — IMPLEMENTED: against exact streak N=2
+
+Against default `--against-min-streak` **3→2** (exact-N fade). Live-matched ≤50¢ hold + `struct_rsi`:
+N=2 n=133 WR56% EV+$0.60 Σ+$80 vs N=3 n=31 WR39% EV−$0.80 Σ−$25.
+
+## 2026-11-11 — IMPLEMENTED: scalp TP≥90¢; against buy ≤50¢ hold
+
+Scalp streak-fade: sell when bid ≥**90¢** (else hold). Against: buy ≤**50¢**, hold to settle
+(default; `--take-profit-all` still optional). Aligns the two streak bots on price band + exit style.
+
+## 2026-11-11 — IMPLEMENTED: streak-fade mid time gate 150/450/900 (current defaults)
+
+Exact streak of **2** → buy other side ≤30¢; TP **90¢**; Δ $10/$20/$50; vel off; no latch.
+Widened entry from 90/300/900 → **150/450/900** (live-matched: combined N=2 n=79→149,
+EV +$1.81→+$1.61, Σ +$143→+$240). N=3/4 still worse. `--scalp-streak 0` = cheaper-side.
+
+| Duration | Time gate | Velocity | Δ cap | TP |
+|----------|-----------|----------|-------|----|
+| 5m | ≤**150s** | **off** | $10 | **90¢** |
+| 15m | ≤**450s** | **off** | $20 | **90¢** |
+| 60m | ≤**900s** | **off** | $50 | **90¢** |
+
+## 2026-11-11 — IMPLEMENTED: streak-fade as main scalp again
+
+Exact-2 fade ≤30¢; hold; entry was ≤90/300/900; Δ on; vel off. Superseded same day by mid gate.
+
 ## 2026-11-11 — IMPLEMENTED: drop velocity window latch (all durations)
 
 Live-matched since current filters (5m): among Δ+time-OK windows that vel blocked,

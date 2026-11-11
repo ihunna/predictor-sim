@@ -224,15 +224,15 @@ def scalp_sim(tmp, entry=30, target=60, ladder_first=40, exit_left=0, stop=0, co
 
 
 def test_scalp_timing_defaults(tmp):
-    """Cheaper-side defaults: entry 150/450/900, Δ 10/20/50, vel 10/20/40, TP 60/60/70."""
+    """Streak-fade defaults: N=2, TP90, entry 150/450/900, Δ 10/20/50, vel off."""
     from strategies.scalp import SCALP_STREAK_MIN
-    assert SCALP_STREAK_MIN == 0
+    assert SCALP_STREAK_MIN == 2
     assert SCALP_WARMUP_SECONDS == {5: 0, 15: 0, 60: 0}
     assert SCALP_ENTRY_ELAPSED == {5: 150, 15: 450, 60: 900}
     assert SCALP_DELTA_CAP_USD == {5: 10.0, 15: 20.0, 60: 50.0}
-    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 10.0, 15: 20.0, 60: 40.0}
+    assert SCALP_VELOCITY_MAX_USD_PER_MIN == {5: 0.0, 15: 0.0, 60: 0.0}
     assert SCALP_ATR_MAX_USD == {5: 0.0, 15: 0.0, 60: 0.0}
-    assert SCALP_TARGET_CENTS == {5: 60, 15: 60, 60: 70}
+    assert SCALP_TARGET_CENTS == {5: 90, 15: 90, 60: 90}
     assert ATR_HOURS == 6
     assert scalp_warmup_seconds(5) == 0
     assert abs(scalp_cancel_left_pct(5) - 50.0) < 1e-9
@@ -242,7 +242,7 @@ def test_scalp_timing_defaults(tmp):
         sim = ScalpSim("btc", dur, 40, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default")
         assert sim.entry_cents == 30 and sim.target_cents == SCALP_TARGET_CENTS[dur]
         assert sim.target_cents == scalp_target_cents(dur)
-        assert sim.streak_min == 0
+        assert sim.streak_min == 2
         assert sim.split_entry_cents == 0 and not sim.split_active
         assert sim.enter_after_seconds == scalp_warmup_seconds(dur)
         assert sim.entry_elapsed_max == SCALP_ENTRY_ELAPSED[dur]
@@ -252,7 +252,7 @@ def test_scalp_timing_defaults(tmp):
         assert sim.velocity_max_usd_per_min == SCALP_VELOCITY_MAX_USD_PER_MIN[dur]
         assert sim.delta_cap_usd == SCALP_DELTA_CAP_USD[dur]
         assert sim.rsi_good_mix is False
-        assert "buy cheaper" in sim.summarize() and f"TP bid≥{SCALP_TARGET_CENTS[dur]}¢" in sim.summarize()
+        assert "exact streak 2" in sim.summarize() and "TP bid≥90¢" in sim.summarize()
 
 
 def _seed_streak(sim, window_start, side, n):
@@ -1273,6 +1273,8 @@ def test_book_and_slugs():
 
 def combo_sim(tmp, strategy, **kwargs):
     kwargs.setdefault("savior_left_pct", 0.0)
+    # Fixtures use exact-3 streaks; production default is 2.
+    kwargs.setdefault("against_min_streak", 3)
     return ComboSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default", strategy=strategy,
                     **kwargs)
 
@@ -1352,6 +1354,8 @@ def test_against_strategy(tmp):
 def against_sim(tmp, **kwargs):
     kwargs.setdefault("min_move_vs_avg", 0)
     kwargs.setdefault("savior_left_pct", 0.0)
+    # Fixtures use exact-3 streaks; production default is 2.
+    kwargs.setdefault("against_min_streak", 3)
     return AgainstSim("btc", 5, 30, 8, None, os.path.join(tmp, "trades.csv"), 100.0, "default", **kwargs)
 
 

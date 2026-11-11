@@ -479,11 +479,10 @@ def parse_args():
                         help="leader / regime / fav / against / combo: see prior docs. "
                              "dual: both @--limit (default 30¢); no structure gate by default "
                              "(no quiet/skew/enter-after). "
-                             "scalp: all-in ≤30→TP (5m/15m 60¢, 60m 70¢); Δ ≤$10/$20/$50 + "
-                             "entry ≤150s/450s/900s + vel ≤$10/$20/$40/min; ATR/RSI off "
-                             "(see --scalp-delta-cap / --scalp-velocity-max / "
-                             "--cancel-left-pct / --scalp-target). "
-                             "--scalp-streak N for optional exact-N fade. "
+                             "scalp: streak-fade — exact 2 same winners → buy other side ≤30¢; "
+                             "TP bid≥90¢; Δ ≤$10/$20/$50; entry ≤150s/450s/900s; vel off; "
+                             "skip not-broken until streak resets "
+                             "(see --scalp-streak / --scalp-delta-cap / --scalp-target). "
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
@@ -493,15 +492,16 @@ def parse_args():
                              "bare: every exact streak, skip only not-broken (no struct/RSI gate; own trades file). "
                              "rsi: no structure gate; only fade when the bet agrees with RSI as trend "
                              "(Up if RSI>55, Down if RSI<45; mid/unknown skip; own trades file).")
-    parser.add_argument("--against-min-streak", type=int, default=3, metavar="WINDOWS",
+    parser.add_argument("--against-min-streak", type=int, default=2, metavar="WINDOWS",
                         help="Against: bet at exactly this many same winners in a row; combo: this many or more "
-                             "(default 3).")
+                             "(default 2).")
     parser.add_argument("--against-min-move", type=float, default=None, metavar="PCT",
                         help="Combo: bet only when the last window moved this many percent or more "
                              "(default 0.02 on 5m, 0.03 on 15m, 0.07 on 60m; the combo move defaults below scale "
                              "the same way). Against ignores this and uses --move-vs-avg instead.")
-    parser.add_argument("--against-max", type=int, default=99, metavar="CENTS",
-                        help="Against and continue: only buy at this ask or below (default 99 = no cap).")
+    parser.add_argument("--against-max", type=int, default=None, metavar="CENTS",
+                        help="Against and continue: only buy at this ask or below "
+                             "(default 50 on against / hold to settle; 99 on combo).")
     parser.add_argument("--move-vs-avg", type=float, default=0.0, metavar="TIMES",
                         help="Against: bet only when the last window's move is at least this many times the average "
                              "move of the last --avg-windows windows (default 0 = off; try 1 later to re-enable).")
@@ -558,14 +558,13 @@ def parse_args():
 
     parser.add_argument("--scalp-streak", type=int, default=None, metavar="N",
                         help="Scalp: exact streak length to fade (buy other side). "
-                             "Default 0 = cheaper-side scalp; e.g. 2 = streak-fade. "
+                             "Default 2; 0 = cheaper-side scalp (no streak gate). "
                              "Longer streaks skip until the run breaks.")
     parser.add_argument("--scalp-entry", type=int, default=30, metavar="CENTS",
-                        help="Scalp: buy when a side's ask is at or below this (default 30).")
+                        help="Scalp: buy when the fade side's ask is at or below this (default 30).")
     parser.add_argument("--scalp-target", type=int, default=None, metavar="CENTS",
                         help="Scalp: final take-profit when bid reaches this. "
-                             "Default: 5m/15m 60¢ / 60m 70¢; 0 = hold to settle; "
-                             "miss without TP = −entry at settle.")
+                             "Default: 90; 0 = hold to settle (miss without TP = −entry at settle).")
     parser.add_argument("--scalp-ladder-first", type=int, default=0, metavar="CENTS",
                         help="Scalp (legacy, split off): sell half the position when bid reaches this "
                              "first ladder level, the rest at --scalp-target (default 0 = off; "
@@ -585,8 +584,8 @@ def parse_args():
                              "skip high-vol regimes. Fail skips only this window.")
     parser.add_argument("--scalp-velocity-max", type=float, default=None, metavar="USD_PER_MIN",
                         help="Scalp: skip when adverse USD / elapsed minutes exceeds this "
-                             "at entry (no window latch). Default: 5m $10 / 15m $20 / 60m $40 "
-                             "per min; 0 = off. Favorable/flat always passes.")
+                             "at entry (no window latch). Default off all durations; 0 = off. "
+                             "Favorable/flat always passes.")
     parser.add_argument("--scalp-exit-left", type=int, default=0, metavar="SECONDS_LEFT",
                         help="Scalp: flatten at bid with this many seconds left if no TP (default 0 = off).")
     parser.add_argument("--scalp-stop", type=int, default=0, metavar="CENTS",
@@ -694,6 +693,8 @@ def main():
             setattr(args, name, round(pct * scale, 3))
     if args.trend_windows is None:
         args.trend_windows = max(24, 480 // duration)
+    if args.against_max is None:
+        args.against_max = 50 if strategy == "against" else 99
     if args.against_min_streak < 1 or args.against_min_move < 0 or not 1 <= args.against_max <= 99:
         raise SystemExit("--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
     if args.continue_max_move < 0:

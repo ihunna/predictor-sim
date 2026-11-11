@@ -16,7 +16,7 @@ STRATEGIES = ("regime", "fav", "against", "combo")
 
 
 class ComboSim(BaseSim):
-    def __init__(self, *args, strategy="combo", fav_max_cents=55, dual_lookback=3, against_min_streak=3,
+    def __init__(self, *args, strategy="combo", fav_max_cents=55, dual_lookback=3, against_min_streak=2,
                  against_min_move_pct=0.02, against_max_cents=99, fav_max_move_pct=0.02, continue_max_move_pct=0.05,
                  trend_windows=96, trend_against_min_move_pct=0.05, against_stop_after_loss=True,
                  avg_windows=24, rsi_windows=14, **kwargs):
