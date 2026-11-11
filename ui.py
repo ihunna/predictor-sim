@@ -39,12 +39,16 @@ def move_pct(start, end):
 
 
 def skip_text(state):
-    reasons = [n for n in state.notes if n != "not_traded"]
+    reasons = []
+    for n in state.notes:
+        if n == "not_traded" or n in reasons:
+            continue
+        reasons.append(n)
     return ", ".join(reasons) or "skipped"
 
 
 def skip_label(state):
-    """Short reason for the dashboard: no PTB, prev move, joined late."""
+    """Short reason for the dashboard past-windows column."""
     for note in state.notes:
         if note == "no_ptb":
             return "no PTB"
@@ -54,6 +58,16 @@ def skip_label(state):
             return "prev move"
         if note.startswith("joined_late_"):
             return "joined late"
+        if note == "velocity_high" or note == "velocity_latched":
+            return "velocity"
+        if note == "adverse_delta":
+            return "Δ"
+        if note == "atr_high":
+            return "ATR"
+        if note.startswith("rsi_"):
+            return "RSI"
+        if note.startswith("streak_"):
+            return "streak"
     return "skipped"
 
 
@@ -903,9 +917,11 @@ class Dashboard:
 
         traded = [r for r in history if r["trading"] and r["pnl"] is not None
                   and r["status"] not in ("settling", "official", "live")]
+        wins = sum(1 for r in traded if r["pnl"] > 0)
+        losses = sum(1 for r in traded if r["pnl"] < 0)
+        tot = sum(r["pnl"] for r in traded)
         both = sum(1 for r in traded if r["fill_type"] == "both")
-        one = [r for r in traded if r["fill_type"] in ("only_up", "only_down")]
-        one_wins = sum(1 for r in one if r["pnl"] > 0)
+        one = sum(1 for r in traded if r["fill_type"] in ("only_up", "only_down"))
         skipped = sum(1 for r in history if not r["trading"])
 
         parts = []
@@ -913,8 +929,15 @@ class Dashboard:
             parts.append(hist)
         else:
             parts.append(Text("No windows finished yet", style="dim"))
-        parts.append(Text(f"Traded {len(traded)} · Both {both} · One side {len(one)} "
-                          f"({one_wins}W/{len(one) - one_wins}L) · Skipped {skipped}", style="dim"))
+        if traded:
+            wr = 100 * wins / len(traded)
+            parts.append(Text(
+                f"Traded {len(traded)} · {wins}W/{losses}L · WR {wr:.0f}% · Σ {tot:+.2f} "
+                f"· Both {both} · One {one} · Skipped {skipped}",
+                style="dim",
+            ))
+        else:
+            parts.append(Text(f"Traded 0 · Skipped {skipped}", style="dim"))
         return Panel(Group(*parts), title="[bold]Past windows[/bold]", border_style="cyan", padding=(0, 1))
 
     def render_wallet(self, state, up_ask, down_ask, history):

@@ -387,7 +387,7 @@ class ScalpSim(BaseSim):
                 # Live path should have armed via prepare_streak; if not, recompute once.
                 reason = self.prepare_streak(state.window_start)
                 if reason:
-                    state.notes.append(reason)
+                    state.note(reason)
                     state.action_reason = reason
                     return []
                 fade_side = getattr(state, "scalp_fade_side", None)
@@ -415,13 +415,13 @@ class ScalpSim(BaseSim):
         if self.atr_max_usd > 0:
             atr = self.atr_6h if self.atr_6h is not None else self.atr_24h
             if atr is None or atr > self.atr_max_usd + 1e-9:
-                state.notes.append("atr_high")
+                state.note("atr_high")
                 state.action_reason = "atr_high"
                 return []
 
         # Layer 2 — adverse velocity at this entry tick only (no window latch).
         if self._velocity_trip(state, side, remaining):
-            state.notes.append("velocity_high")
+            state.note("velocity_high")
             state.action_reason = "velocity_high"
             return []
 
@@ -430,7 +430,7 @@ class ScalpSim(BaseSim):
         # Layer 3 — signed adverse-Δ cap (USD) against the side we would buy.
         if self.delta_cap_usd > 0:
             if adverse is None or adverse > self.delta_cap_usd + 1e-9:
-                state.notes.append("adverse_delta")
+                state.note("adverse_delta")
                 state.action_reason = "adverse_delta"
                 return []
 
@@ -438,15 +438,15 @@ class ScalpSim(BaseSim):
         if self.rsi_good_mix:
             rsi = state.rsi
             if rsi is None:
-                state.notes.append("rsi_unknown")
+                state.note("rsi_unknown")
                 state.action_reason = "rsi_unknown"
                 return []
             if side == "Up" and not (rsi < self.rsi_mix_up_below - 1e-12):
-                state.notes.append("rsi_mix")
+                state.note("rsi_mix")
                 state.action_reason = "rsi_mix"
                 return []
             if side == "Down" and not (rsi > self.rsi_mix_down_above + 1e-12):
-                state.notes.append("rsi_mix")
+                state.note("rsi_mix")
                 state.action_reason = "rsi_mix"
                 return []
 

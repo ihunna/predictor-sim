@@ -11,6 +11,7 @@ Hedge helpers live here for strategies that use them (dual splits the unfilled s
 import csv
 import math
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,6 +19,9 @@ from datetime import datetime, timedelta, timezone
 
 from logs import format_time
 from structure import PriceStructure
+
+# Trades logs can carry huge notes (e.g. repeated per-tick skips before dedupe).
+csv.field_size_limit(min(sys.maxsize, 50 * 1024 * 1024))
 
 CHEAP_LEVELS = (40, 30, 20, 15, 10, 5)
 RISE_LEVELS = (60, 65, 70, 75, 80, 85, 90, 95)
@@ -522,6 +526,11 @@ class WindowState:
         if down:
             return "only_down"
         return "none"
+
+    def note(self, text):
+        """Append a note once (avoids per-tick skip spam blowing the CSV field limit)."""
+        if text and text not in self.notes:
+            self.notes.append(text)
 
 
 class BaseSim:
@@ -1156,7 +1165,10 @@ class BaseSim:
         fee, pnl = self.compute_result(state, outcome, maker_fee_bps, taker_fee_bps)
         hedge = state.hedge_order
         saved = self.would_stop_saved(state, outcome, taker_fee_bps)
-        all_notes = list(state.notes) + list(notes)
+        all_notes = []
+        for n in list(state.notes) + list(notes):
+            if n and n not in all_notes:
+                all_notes.append(n)
         if state.up_taker:
             all_notes.append("up_taker")
         if state.down_taker:
