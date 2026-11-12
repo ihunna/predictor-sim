@@ -25,7 +25,7 @@ AGAINST_FILTERS = ("struct_rsi", "struct", "bare", "rsi")
 class AgainstSim(ComboSim):
     def __init__(self, *args, take_profit_cents=85, take_profit_all=False, min_move_vs_avg=0.0, avg_windows=24,
                  rsi_windows=14, rsi_agree_up=RSI_AGREE_UP, rsi_agree_down=RSI_AGREE_DOWN,
-                 against_filter="struct_rsi", against_max_cents=50, **kwargs):
+                 against_filter="struct_rsi", against_max_cents=55, **kwargs):
         kwargs.pop("trend_windows", None)
         if against_filter not in AGAINST_FILTERS:
             raise ValueError(f"unknown against_filter {against_filter!r}; want one of {AGAINST_FILTERS}")

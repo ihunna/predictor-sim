@@ -505,7 +505,7 @@ def parse_args():
                              "the same way). Against ignores this and uses --move-vs-avg instead.")
     parser.add_argument("--against-max", type=int, default=None, metavar="CENTS",
                         help="Against and continue: only buy at this ask or below "
-                             "(default 50 on against / hold to settle; 99 on combo).")
+                             "(default 55 on against / hold to settle; 99 on combo).")
     parser.add_argument("--move-vs-avg", type=float, default=0.0, metavar="TIMES",
                         help="Against: bet only when the last window's move is at least this many times the average "
                              "move of the last --avg-windows windows (default 0 = off; try 1 later to re-enable).")
@@ -709,7 +709,7 @@ def main():
     if args.trend_windows is None:
         args.trend_windows = max(24, 480 // duration)
     if args.against_max is None:
-        args.against_max = 50 if strategy == "against" else 99
+        args.against_max = 55 if strategy == "against" else 99
     if args.against_min_streak < 1 or args.against_min_move < 0 or not 1 <= args.against_max <= 99:
         raise SystemExit("--streak/--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
     if args.continue_max_move < 0:
