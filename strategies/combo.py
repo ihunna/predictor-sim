@@ -132,9 +132,33 @@ class ComboSim(BaseSim):
                 except (KeyError, TypeError, ValueError):
                     pass
                 match = re.match(r"streak_(\d+)_(up|down)_", row.get("action_reason") or "")
-                if row.get("action") == "against" and match:
+                if row.get("action") == "against" and match and self._history_row_is_ours(row):
                     key = (start - int(match.group(1)) * self.duration * 60, match.group(2).capitalize())
                     self.against_streaks.setdefault(key, start)
+
+    def _history_row_is_ours(self, row):
+        """When several against variants share one trades file, only own filter+streak arm streaks."""
+        if self.strategy != "against":
+            return True
+        filt = getattr(self, "against_filter", None)
+        if filt:
+            row_filt = (row.get("against_filter") or "").strip()
+            # Legacy rows (no column) count as struct_rsi so the default bot still resumes.
+            if not row_filt:
+                row_filt = "struct_rsi"
+            if row_filt != filt:
+                return False
+        row_n = (row.get("against_streak") or "").strip()
+        if row_n:
+            try:
+                if int(row_n) != int(self.against_min_streak):
+                    return False
+            except ValueError:
+                return False
+        elif int(self.against_min_streak) != 2:
+            # Legacy rows with no against_streak were the default N=2 bot.
+            return False
+        return True
 
     def _record_move(self, window_start, start_price, end_price):
         self.price_structure.record_move(window_start, start_price, end_price)

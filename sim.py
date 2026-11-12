@@ -42,6 +42,8 @@ TRADES_HEADER = [
     "prev_window_move",
     "action",
     "action_reason",
+    "against_filter",
+    "against_streak",
     "streak_before",
     "recent_duals",
     "avg_move_pct",
@@ -219,13 +221,37 @@ def rise_watches():
     return {level: RiseWatch(level) for level in RISE_LEVELS}
 
 
-def last_capital_after(path, default):
-    """Starting balance on restart: the last capital_after in the trades log, else default. Returns (amount, source)."""
+def _row_matches(row, match):
+    """True if ``match`` is None or every column in ``match`` equals the row.
+
+    Against legacy rows (empty against_filter / against_streak) count as struct_rsi + streak 2.
+    """
+    if not match:
+        return True
+    for key, want in match.items():
+        got = (row.get(key) or "").strip()
+        if key == "against_filter" and not got:
+            got = "struct_rsi"
+        if key == "against_streak" and not got:
+            got = "2"
+        if got != str(want):
+            return False
+    return True
+
+
+def last_capital_after(path, default, match=None):
+    """Starting balance on restart: the last capital_after in the trades log, else default. Returns (amount, source).
+
+    ``match`` optionally restricts to rows with those column values (e.g. against_filter + against_streak
+    when several against variants share one file).
+    """
     if not path or not os.path.isfile(path):
         return default, "default"
     last = None
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            if not _row_matches(row, match):
+                continue
             if row.get("capital_after"):
                 last = row["capital_after"]
     try:
@@ -234,13 +260,15 @@ def last_capital_after(path, default):
         return default, "default"
 
 
-def last_reloaded_total(path):
+def last_reloaded_total(path, match=None):
     """Total topped up so far: the last reloaded_total in the trades log, else 0."""
     if not path or not os.path.isfile(path):
         return 0.0
     last = 0.0
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
+            if not _row_matches(row, match):
+                continue
             try:
                 last = float(row.get("reloaded_total") or last)
             except ValueError:
@@ -1193,6 +1221,13 @@ class BaseSim:
                 "prev_window_move": f"{prev_move:+.4f}" if prev_move is not None else "",
                 "action": state.action,
                 "action_reason": state.action_reason,
+                "against_filter": getattr(self, "against_filter", "") or "",
+                "against_streak": (
+                    str(getattr(self, "against_min_streak", ""))
+                    if getattr(self, "strategy", "") == "against"
+                    and getattr(self, "against_min_streak", None) is not None
+                    else ""
+                ),
                 "streak_before": state.streak_before,
                 "recent_duals": state.recent_duals,
                 "avg_move_pct": f"{state.avg_move_pct:.4f}" if state.avg_move_pct is not None else "",

@@ -486,15 +486,19 @@ def parse_args():
                              "Optional --dual-structure to re-gate dual/scalp. "
                              "(default: regime for 5m, dual otherwise)")
 
-    parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default="struct_rsi",
+    parser.add_argument("--against-filter", choices=("struct_rsi", "struct", "bare", "rsi"), default=None,
                         help="Against only. struct_rsi (default): against clear structure + RSI agree with structure. "
                              "struct: against clear structure only (no RSI gate; own trades file). "
                              "bare: every exact streak, skip only not-broken (no struct/RSI gate; own trades file). "
                              "rsi: no structure gate; only fade when the bet agrees with RSI as trend "
-                             "(Up if RSI>55, Down if RSI<45; mid/unknown skip; own trades file).")
-    parser.add_argument("--against-min-streak", type=int, default=2, metavar="WINDOWS",
-                        help="Against: bet at exactly this many same winners in a row; combo: this many or more "
-                             "(default 2).")
+                             "(Up if RSI>55, Down if RSI<45; mid/unknown skip; own trades file). "
+                             "Shorthand: --bare.")
+    parser.add_argument("--bare", action="store_true",
+                        help="Against: shorthand for --against-filter bare. Use with --strategy against.")
+    parser.add_argument("--streak", "--against-min-streak", dest="against_min_streak", type=int, default=2,
+                        metavar="N",
+                        help="Against: exact streak length to fade (default 2). Combo: this many or more. "
+                             "Alias: --against-min-streak. Logged in against_streak column (shared trades file).")
     parser.add_argument("--against-min-move", type=float, default=None, metavar="PCT",
                         help="Combo: bet only when the last window moved this many percent or more "
                              "(default 0.02 on 5m, 0.03 on 15m, 0.07 on 60m; the combo move defaults below scale "
@@ -623,7 +627,7 @@ def parse_args():
     parser.add_argument("--cancel-left-pct", type=float, default=None,
                         help="Cancel unfilled when this much of the window is left, in percent. "
                              "Dual default 67 ≈ first third. Scalp default from entry gate "
-                             "(5m/15m/60m → 50%/50%/75% left ≈ entry ≤150s/450s/900s). "
+                             "(5m/15m/60m → 50%%/50%%/75%% left ≈ entry ≤150s/450s/900s). "
                              "0 = never cancel.")
     parser.add_argument("--savior-left-pct", type=float, default=0.0,
                         help="On one-sided holds, arm savior when this much of the window is left "
@@ -682,7 +686,18 @@ def main():
         raise SystemExit("--contracts must be > 0")
     if args.place_at is not None and not 0 < args.place_at <= duration * 60:
         raise SystemExit(f"--place-at must be between 1 and {duration * 60} seconds")
+    if args.bare:
+        if args.against_filter not in (None, "bare"):
+            raise SystemExit("use --bare or --against-filter, not both")
+        args.against_filter = "bare"
+    elif args.against_filter is None:
+        args.against_filter = "struct_rsi"
+    if args.bare and args.strategy not in (None, "against"):
+        raise SystemExit("--bare requires --strategy against")
+
     strategy = args.strategy or ("regime" if duration == 5 else "dual")
+    if args.bare and strategy != "against":
+        raise SystemExit("--bare requires --strategy against")
     if not 1 <= args.fav_max <= 99:
         raise SystemExit("--fav-max must be between 1 and 99 cents")
     if args.dual_lookback < 1:
@@ -696,7 +711,7 @@ def main():
     if args.against_max is None:
         args.against_max = 50 if strategy == "against" else 99
     if args.against_min_streak < 1 or args.against_min_move < 0 or not 1 <= args.against_max <= 99:
-        raise SystemExit("--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
+        raise SystemExit("--streak/--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
     if args.continue_max_move < 0:
         raise SystemExit("--continue-max-move must be >= 0")
     if args.move_vs_avg < 0 or args.avg_windows < 10:
@@ -843,11 +858,7 @@ def main():
     if not 0 <= args.watch_from_pct < args.watch_to_pct < 100:
         raise SystemExit("--watch-from-pct must be below --watch-to-pct, both between 0 and 100")
     if strategy in ("leader", "fav", "against", "combo", "scalp"):
-        if strategy == "against" and args.against_filter != "struct_rsi":
-            # alt against variants get their own log so they can run beside live struct_rsi
-            trades_file = f"{coin}-{duration}-predict-against-{args.against_filter}-trades.csv"
-        else:
-            trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
+        trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
     else:
         trades_file = dual_trades_file
     if args.capital_last is not None:
@@ -855,7 +866,12 @@ def main():
             raise SystemExit("--capital-last must be > 0")
         capital, source = args.capital_last, "cli"
     else:
-        capital, source = last_capital_after(trades_file, args.capital)
+        # Against variants share one file; resume capital only from matching filter+streak rows.
+        match = None
+        if strategy == "against":
+            match = {"against_filter": args.against_filter,
+                     "against_streak": str(args.against_min_streak)}
+        capital, source = last_capital_after(trades_file, args.capital, match=match)
 
     sim_args = (coin, duration, args.limit, args.contracts, args.place_at, trades_file, capital, source)
     common = dict(max_prev_move_pct=args.max_prev_move_pct, cancel_left_pct=args.cancel_left_pct,
@@ -865,7 +881,11 @@ def main():
                   hedge_cents=args.hedge_at, stop_loss_seconds=args.stop_loss_at, stop_loss_live=args.stop_loss_live,
                   stop_loss_min_cents=args.stop_loss_min,
                   reload_to=args.capital if args.reload_to is None else args.reload_to,
-                  reloaded_total=last_reloaded_total(trades_file))
+                  reloaded_total=last_reloaded_total(
+                      trades_file,
+                      match=({"against_filter": args.against_filter,
+                              "against_streak": str(args.against_min_streak)}
+                             if strategy == "against" else None)))
     if strategy == "leader":
         sim = LeaderSim(*sim_args, **common, leader_at_cents=args.leader_at, leader_max_cents=args.leader_max,
                         min_prev_move_pct=args.min_prev_move_pct, watch_from_pct=args.watch_from_pct,

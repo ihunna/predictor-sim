@@ -1,5 +1,7 @@
 # Decision log — scalp
 
+Pending ideas (not defaults): see [`TO-BE-ADDED.md`](TO-BE-ADDED.md).
+
 ## 2026-11-11 — IMPLEMENTED: against exact streak N=2
 
 Against default `--against-min-streak` **3→2** (exact-N fade). Live-matched ≤50¢ hold + `struct_rsi`:
