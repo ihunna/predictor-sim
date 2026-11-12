@@ -512,9 +512,15 @@ def parse_args():
     parser.add_argument("--avg-windows", type=int, default=24, metavar="WINDOWS",
                         help="Against: windows for the average move and the structure (default 24).")
     parser.add_argument("--take-profit-at", type=int, default=85, metavar="CENTS",
-                        help="Against: take-profit sell price when --take-profit-all is set (default 85; 0 = off).")
+                        help="Against: take-profit sell price when --take-profit-all is set (default 85; 0 = off). "
+                             "Prefer --tp CENTS.")
     parser.add_argument("--take-profit-all", action="store_true",
-                        help="Against: put the take-profit on every bet (default: hold to the end).")
+                        help="Against: put the take-profit on every bet (default: hold to the end). "
+                             "Prefer --tp CENTS.")
+    parser.add_argument("--tp", type=int, default=None, metavar="CENTS",
+                        help="Against: enable take-profit when bid reaches this (¢). "
+                             "Shorthand for --take-profit-all --take-profit-at CENTS. "
+                             "Default: hold to settle (no TP). Example: --tp 90.")
     parser.add_argument("--continue-max-move", type=float, default=None, metavar="PCT",
                         help="Combo: after --against-min-streak+ in a row, buy the streak's side when the last window "
                              "moved less than this many percent and less than the window before (default 0.05 on 5m; "
@@ -712,12 +718,24 @@ def main():
         args.against_max = 55 if strategy == "against" else 99
     if args.against_min_streak < 1 or args.against_min_move < 0 or not 1 <= args.against_max <= 99:
         raise SystemExit("--streak/--against-min-streak must be >= 1, --against-min-move >= 0, --against-max 1-99")
+    if args.tp is not None:
+        if strategy != "against":
+            raise SystemExit("--tp is against-only (use --strategy against)")
+        if not 1 <= args.tp <= 99:
+            raise SystemExit("--tp must be between 1 and 99")
+        if args.tp <= args.against_max:
+            raise SystemExit("--tp must be above --against-max")
+        args.take_profit_all = True
+        args.take_profit_at = args.tp
     if args.continue_max_move < 0:
         raise SystemExit("--continue-max-move must be >= 0")
     if args.move_vs_avg < 0 or args.avg_windows < 10:
         raise SystemExit("--move-vs-avg must be >= 0, --avg-windows >= 10")
     if args.trend_windows < 0 or args.trend_against_min_move < 0 or not 0 <= args.take_profit_at <= 99:
         raise SystemExit("--trend-windows and --trend-against-min-move must be >= 0, --take-profit-at 0-99")
+    if strategy == "against" and args.take_profit_all and args.take_profit_at > 0:
+        if args.take_profit_at <= args.against_max:
+            raise SystemExit("--take-profit-at / --tp must be above --against-max")
     if args.max_prev_move_pct < 0:
         raise SystemExit("--max-prev-move-pct must be >= 0")
     move_scale = MOVE_SCALE.get(duration, (duration / 5) ** 0.5)
