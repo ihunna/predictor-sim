@@ -292,9 +292,20 @@ class ComboSim(BaseSim):
             side = state.bet_side
             price = up_ask if side == "Up" else down_ask
             if price > self.against_max_cents / 100 + 1e-9:
-                state.trading = False
-                state.notes.append(f"{state.mode}_{side.lower()}_{round(price * 100)}c_over_{self.against_max_cents}c")
-                state.notes.append("not_traded")
+                # Recheck until cancel_left; only then give up (ask can dip ≤max and still win).
+                note = (f"{state.mode}_{side.lower()}_{round(price * 100)}c_over_"
+                        f"{self.against_max_cents}c")
+                cancel_left = self.cancel_left_seconds()
+                if self.cancel_left_pct > 0 and remaining <= cancel_left + 1e-9:
+                    state.trading = False
+                    if note not in state.notes:
+                        state.notes.append(note)
+                    if "not_traded" not in state.notes:
+                        state.notes.append("not_traded")
+                    return []
+                wait = f"waiting_{note}"
+                if wait not in state.notes and note not in state.notes:
+                    state.notes.append(wait)
                 return []
             return [Order(side, "main", price, self.contracts, remaining)]
         return super()._first_orders(state, remaining, up_ask, down_ask)

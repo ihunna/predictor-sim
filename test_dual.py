@@ -1329,6 +1329,40 @@ def test_regime_favourite_window(tmp):
     assert not state.trading and "fav_down_58c_over_55c" in state.notes and not state.orders
 
 
+def test_against_waits_for_ask_under_max(tmp):
+    """Over max → wait; lift when ask ≤max before cancel_left; give up at cancel_left."""
+    # 5m, cancel_left 67% → 201s left. Wait while remaining > 201.
+    sim = against_sim(tmp, against_max_cents=55, cancel_left_pct=67.0, against_filter="bare",
+                      against_min_streak=2)
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, None, 0.01)[0] == "against"
+    sim.resolve_decision(state, None, mode="against")
+    assert state.bet_side == "Down"
+    # ask 56¢ → wait
+    sim.on_tick(START + 1, 0.45, 0.56)
+    assert state.trading and state.placed_time_left is None and not state.orders
+    assert any(n.startswith("waiting_against_down_56c_over_55c") for n in state.notes)
+    # dips to 50¢ while still above cancel_left → lift
+    sim.on_tick(START + 30, 0.50, 0.50)
+    assert state.placed_time_left is not None and state.fill_type == "only_down"
+    assert state.avg_price("Down") == 0.50
+
+
+def test_against_gives_up_over_max_at_cancel_left(tmp):
+    sim = against_sim(tmp, against_max_cents=55, cancel_left_pct=67.0, against_filter="bare",
+                      against_min_streak=2)
+    sim.history = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Down", True]}
+    state = sim.start_window(START, END, "s", "1", now=START, decision_pending=True)
+    assert sim.regime_decision(START, None, 0.01)[0] == "against"
+    sim.resolve_decision(state, None, mode="against")
+    sim.on_tick(START + 1, 0.45, 0.56)  # wait
+    # remaining = 201 → cancel_left boundary → give up
+    sim.on_tick(START + (300 - 201), 0.45, 0.56)
+    assert not state.trading and not state.orders
+    assert "against_down_56c_over_55c" in state.notes and "not_traded" in state.notes
+
+
 def test_against_strategy(tmp):
     sim = combo_sim(tmp, "against")
     three_up = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
@@ -1814,6 +1848,8 @@ def main():
             test_regime_decision,
             test_regime_favourite_window,
             test_against_strategy,
+            test_against_waits_for_ask_under_max,
+            test_against_gives_up_over_max_at_cancel_left,
             test_against_exactly_three_and_take_profit,
             test_against_structure,
             test_against_rsi_agree,

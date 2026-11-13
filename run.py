@@ -251,10 +251,11 @@ def decide_regime(ui, sim, state, prev_move):
         held = (f"sold at {round(state.take_profit * 100)}¢ (take-profit) or held to the end" if state.take_profit
                 else "held to the end")
         message = (f"Against-the-streak window ({streak}): buying {sim.contracts} {state.bet_side} at its ask "
-                   f"if ≤{sim.against_max_cents}¢, {held}.")
+                   f"if ≤{sim.against_max_cents}¢ (recheck until {sim.cancel_left_pct:g}% left), {held}.")
     elif action == "continue":
         message = (f"Streak-continues window ({streak}, slowing): buying {sim.contracts} {state.bet_side} at its "
-                   f"ask if ≤{sim.against_max_cents}¢, held to the end.")
+                   f"ask if ≤{sim.against_max_cents}¢ (recheck until {sim.cancel_left_pct:g}% left), "
+                   f"held to the end.")
     elif action == "fav":
         message = (f"Favourite window ({streak}): buying {sim.contracts} of the higher-priced side at its ask "
                    f"if ≤{sim.fav_max_cents}¢, held to the end.")
@@ -507,7 +508,8 @@ def parse_args():
                              "the same way). Against ignores this and uses --move-vs-avg instead.")
     parser.add_argument("--against-max", type=int, default=None, metavar="CENTS",
                         help="Against and continue: only buy at this ask or below "
-                             "(default 55 on against / hold to settle; 99 on combo).")
+                             "(default 55 on against / hold to settle; 99 on combo). "
+                             "Against keeps rechecking until --cancel-left-pct remaining, then skips.")
     parser.add_argument("--move-vs-avg", type=float, default=0.0, metavar="TIMES",
                         help="Against: bet only when the last window's move is at least this many times the average "
                              "move of the last --avg-windows windows (default 0 = off; try 1 later to re-enable).")

@@ -13,9 +13,11 @@ filtered):
   ``rsi_agree_up``, bet Down only if RSI < ``rsi_agree_down``). Mid/unknown RSI → skip.
   File: ``*-predict-against-rsi-trades.csv``.
 
-One bet per streak: a streak that keeps going is skipped until it breaks. ``min_move_vs_avg`` (default 0 = off)
-can require the last move to be that many times the average of the last ``avg_windows``; it is always logged.
-``take_profit_all`` puts a resting sell limit on every bet; ``take_profit_cents=0`` turns it off."""
+One bet per streak: a streak that keeps going is skipped until it breaks. Entry lifts the ask when
+≤ ``against_max_cents``; if the ask is over max, recheck until ``cancel_left_pct`` remaining, then skip.
+``min_move_vs_avg`` (default 0 = off) can require the last move to be that many times the average of the
+last ``avg_windows``; it is always logged. ``take_profit_all`` puts a resting sell limit on every bet;
+``take_profit_cents=0`` turns it off."""
 from logs import format_time
 from .combo import ComboSim
 
@@ -70,7 +72,8 @@ class AgainstSim(ComboSim):
             skip = "trending-side streak / mixed / unknown / RSI mid or disagree"
         return (
             f"Against [{self.against_filter}]: at exactly {self.against_min_streak} same winners in a row "
-            f"{gate}{vs_avg}, buy {self.contracts} of the other side (≤{self.against_max_cents}¢); "
+            f"{gate}{vs_avg}, buy {self.contracts} of the other side when ask ≤{self.against_max_cents}¢ "
+            f"(recheck until {self.cancel_left_pct:g}% left, then skip); "
             f"{skip} → skip; a streak that keeps going is not bet again until it breaks; "
             f"{self._take_profit_text()}; {self._savior_text()} | {capital}"
         )
