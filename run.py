@@ -23,6 +23,7 @@ from strategies import (
     scalp_atr_max_usd, scalp_cancel_left_pct, scalp_delta_cap_usd,
     scalp_target_cents, scalp_velocity_max_usd_per_min, scalp_warmup_seconds,
 )
+from strategies.against import against_trades_path
 from predict_feed import (
     API_RATE_PER_MINUTE,
     CHAINLINK_FEED_IDS,
@@ -498,7 +499,8 @@ def parse_args():
     parser.add_argument("--streak", "--against-min-streak", dest="against_min_streak", type=int, default=2,
                         metavar="N",
                         help="Against: exact streak length to fade (default 2). Combo: this many or more. "
-                             "Alias: --against-min-streak. Logged in against_streak column (shared trades file).")
+                             "Alias: --against-min-streak. Logged in against_streak column "
+                             "(each against_filter has its own trades file).")
     parser.add_argument("--against-min-move", type=float, default=None, metavar="PCT",
                         help="Combo: bet only when the last window moved this many percent or more "
                              "(default 0.02 on 5m, 0.03 on 15m, 0.07 on 60m; the combo move defaults below scale "
@@ -875,7 +877,9 @@ def main():
         raise SystemExit("--min-prev-move-pct must be >= 0")
     if not 0 <= args.watch_from_pct < args.watch_to_pct < 100:
         raise SystemExit("--watch-from-pct must be below --watch-to-pct, both between 0 and 100")
-    if strategy in ("leader", "fav", "against", "combo", "scalp"):
+    if strategy == "against":
+        trades_file = against_trades_path(coin, duration, args.against_filter)
+    elif strategy in ("leader", "fav", "combo", "scalp"):
         trades_file = f"{coin}-{duration}-predict-{strategy}-trades.csv"
     else:
         trades_file = dual_trades_file
@@ -884,7 +888,7 @@ def main():
             raise SystemExit("--capital-last must be > 0")
         capital, source = args.capital_last, "cli"
     else:
-        # Against variants share one file; resume capital only from matching filter+streak rows.
+        # Per-filter against file; still match streak so N=2 and N=3 of the same filter don't mix capital.
         match = None
         if strategy == "against":
             match = {"against_filter": args.against_filter,

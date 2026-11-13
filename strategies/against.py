@@ -1,14 +1,17 @@
 """against: when exactly ``against_min_streak`` same winners in a row, buy the other side.
 
-Filter modes (``against_filter``):
+Filter modes (``against_filter``); each mode writes its own trades CSV (bare never shares a file with
+filtered):
 - ``struct_rsi`` (default): streak must be against clear structure and RSI must agree with that structure
   (up → RSI > ``rsi_agree_up``, down → RSI < ``rsi_agree_down``). With-structure / mixed / unknown /
-  RSI mid/disagree/unknown → skip.
+  RSI mid/disagree/unknown → skip. File: ``*-predict-against-trades.csv``.
 - ``struct``: streak must be against clear structure (non-trending side); no RSI gate. With-structure /
-  mixed / unknown → skip. RSI is logged only.
+  mixed / unknown → skip. RSI is logged only. File: ``*-predict-against-struct-trades.csv``.
 - ``bare``: no structure/RSI gate — every exact-N streak (still skip not-broken). Structure/RSI are logged.
+  File: ``*-predict-against-bare-trades.csv``.
 - ``rsi``: no structure gate — use RSI as trend and do not fade against it (bet Up only if RSI >
   ``rsi_agree_up``, bet Down only if RSI < ``rsi_agree_down``). Mid/unknown RSI → skip.
+  File: ``*-predict-against-rsi-trades.csv``.
 
 One bet per streak: a streak that keeps going is skipped until it breaks. ``min_move_vs_avg`` (default 0 = off)
 can require the last move to be that many times the average of the last ``avg_windows``; it is always logged.
@@ -20,6 +23,15 @@ from .combo import ComboSim
 RSI_AGREE_UP = 55
 RSI_AGREE_DOWN = 45
 AGAINST_FILTERS = ("struct_rsi", "struct", "bare", "rsi")
+
+
+def against_trades_path(coin, duration, against_filter):
+    """One CSV per against_filter so bare never shares a write path with filtered."""
+    if against_filter not in AGAINST_FILTERS:
+        raise ValueError(f"unknown against_filter {against_filter!r}; want one of {AGAINST_FILTERS}")
+    if against_filter == "struct_rsi":
+        return f"{coin}-{duration}-predict-against-trades.csv"
+    return f"{coin}-{duration}-predict-against-{against_filter}-trades.csv"
 
 
 class AgainstSim(ComboSim):

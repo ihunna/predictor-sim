@@ -15,6 +15,7 @@ from strategies import (
     scalp_atr_max_usd, scalp_cancel_left_pct, scalp_delta_cap_usd,
     scalp_target_cents, scalp_velocity_max_usd_per_min, scalp_warmup_seconds,
 )
+from strategies.against import against_trades_path
 
 START = 1791813600  # 14:00 UTC = 10am ET
 END = START + 300
@@ -1510,6 +1511,13 @@ def test_against_rsi_agree(tmp):
     assert state.bet_side == "Up"
 
 
+def test_against_trades_path_per_filter():
+    assert against_trades_path("btc", 5, "struct_rsi") == "btc-5-predict-against-trades.csv"
+    assert against_trades_path("btc", 5, "bare") == "btc-5-predict-against-bare-trades.csv"
+    assert against_trades_path("eth", 15, "struct") == "eth-15-predict-against-struct-trades.csv"
+    assert against_trades_path("btc", 60, "rsi") == "btc-60-predict-against-rsi-trades.csv"
+
+
 def test_against_filter_bare_rsi_and_struct(tmp):
     """bare / rsi / struct-only filters."""
     three_up = {START - 300: ["Up", False], START - 600: ["Up", False], START - 900: ["Up", True],
@@ -1810,6 +1818,7 @@ def main():
             test_against_structure,
             test_against_rsi_agree,
             test_against_move_vs_average,
+            test_against_filter_bare_rsi_and_struct,
             test_combo_strategy,
             test_combo_continue,
             test_combo_trend,
@@ -1822,6 +1831,8 @@ def main():
             print(f"✅ {test.__name__}")
         test_book_and_slugs()
         print("✅ test_book_and_slugs")
+        test_against_trades_path_per_filter()
+        print("✅ test_against_trades_path_per_filter")
     print("All tests passed")
 
 

@@ -137,7 +137,7 @@ class ComboSim(BaseSim):
                     self.against_streaks.setdefault(key, start)
 
     def _history_row_is_ours(self, row):
-        """When several against variants share one trades file, only own filter+streak arm streaks."""
+        """Only arm streaks from this filter+streak (safe if a legacy shared file is loaded)."""
         if self.strategy != "against":
             return True
         filt = getattr(self, "against_filter", None)

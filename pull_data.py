@@ -27,6 +27,7 @@ DEFAULT_FILES = [
     "*-predict-scalp-trades.csv",
     "*-predict-fav-trades.csv",
     "*-predict-against-trades.csv",
+    "*-predict-against-*-trades.csv",  # bare / struct / rsi (each filter has its own file)
     "*-predict-combo-trades.csv",
     "*-updown.csv",
     # logs archived after a column change; without these a pull after a restart replaces the history

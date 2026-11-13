@@ -12,10 +12,16 @@ import csv
 import math
 import os
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 
 from logs import format_time
 from structure import PriceStructure
@@ -276,18 +282,51 @@ def last_reloaded_total(path, match=None):
     return last
 
 
+def _trades_lock_path(path):
+    return f"{path}.lock"
+
+
+def with_trades_file_lock(path, fn):
+    """Cross-process lock so shared against logs don't race on migrate/append."""
+    lock_path = _trades_lock_path(path)
+    lockf = open(lock_path, "a", encoding="utf-8")
+    try:
+        if fcntl is not None:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        return fn()
+    finally:
+        if fcntl is not None:
+            try:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        lockf.close()
+
+
 def migrate_trades_file(path, old_header):
     """Rewrites the trades log in place with the current columns: older rows get "none" in new columns, and
-    columns no longer written are kept at the end. Returns the header now in the file."""
+    columns no longer written are kept at the end. Returns the header now in the file.
+
+    Uses a unique temp file (safe when several against bots share one CSV).
+    """
     header = TRADES_HEADER + [c for c in old_header if c not in TRADES_HEADER]
     with open(path, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
-    tmp = f"{path}.tmp"
-    with open(tmp, mode="w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=header, restval="none")
-        writer.writeheader()
-        writer.writerows(rows)
-    os.replace(tmp, path)
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=header, restval="none")
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     return header
 
 
@@ -1208,8 +1247,7 @@ class BaseSim:
 
         with self.write_lock:
             capital_before = self.capital
-            if pnl is not None:
-                self.capital = round(self.capital + pnl, 4)
+            capital_after = round(self.capital + pnl, 4) if pnl is not None else self.capital
             row = {
                 "window_start": state.window_start,
                 "slug": state.slug,
@@ -1312,28 +1350,40 @@ class BaseSim:
                 "fee": f"{fee:.4f}",
                 "pnl": f"{pnl:.4f}" if pnl is not None else "",
                 "capital_before": f"{capital_before:.4f}",
-                "capital_after": f"{self.capital:.4f}",
+                "capital_after": f"{capital_after:.4f}",
                 "reload": f"{state.reload:.4f}" if state.reload else "",
                 "reloaded_total": f"{self.reloaded_total:.4f}",
                 "notes": ";".join(all_notes),
             }
+            # Only credit capital after a successful log write (failed migrate used to
+            # update balance while UI still counted the same PnL under Pending).
             self._write_row(row)
+            self.capital = capital_after
         return row
 
     def _write_row(self, row):
         path = self.trades_file
-        header = TRADES_HEADER
-        if os.path.isfile(path):
-            with open(path, newline="", encoding="utf-8") as f:
-                old_header = next(csv.reader(f), None)
-            if old_header and old_header != TRADES_HEADER:
-                header = migrate_trades_file(path, old_header)
-        file_exists = os.path.isfile(path)
-        with open(path, mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=header, restval="none")
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(row)
+
+        def _locked_write():
+            header = TRADES_HEADER
+            if os.path.isfile(path):
+                with open(path, newline="", encoding="utf-8") as f:
+                    old_header = next(csv.reader(f), None)
+                if old_header and old_header != TRADES_HEADER:
+                    try:
+                        header = migrate_trades_file(path, old_header)
+                    except OSError:
+                        # Peer process likely finished migrate; use whatever header is on disk.
+                        with open(path, newline="", encoding="utf-8") as f:
+                            header = next(csv.reader(f), list(TRADES_HEADER))
+            file_exists = os.path.isfile(path)
+            with open(path, mode="a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=header, restval="none")
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow(row)
+
+        with_trades_file_lock(path, _locked_write)
 
     def status_label(self):
         return f"Dual {self.limit_cents}¢"
